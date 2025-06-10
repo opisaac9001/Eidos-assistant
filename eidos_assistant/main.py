@@ -54,8 +54,8 @@ def run_assistant():
     print("Type 'quit' or 'exit' to end the session.")
     print("-" * 30)
 
-    while True:
-        try:
+    try: # Moved try block to encompass the while loop for proper finally execution
+        while True:
             user_input = input("You: ")
             if user_input.lower() in ["quit", "exit"]:
                 print("Exiting Eidos Assistant. Goodbye!")
@@ -276,16 +276,12 @@ def run_assistant():
             assistant_response = engine.get_response(user_input)
             print(f"Eidos: {assistant_response}")
 
-        except KeyboardInterrupt:
-            print("\nExiting Eidos Assistant due to interrupt. Goodbye!")
-            break
-        except Exception as e:
-            print(f"An unexpected error occurred: {e}")
-            # Optionally, decide if the loop should break on all errors
-            # break
-    # Ensure Porcupine is cleaned up if it was initialized, though run_always_listening_mode handles its own.
-    # This is more of a general cleanup if VoiceIO was used elsewhere and main is exiting.
+    except KeyboardInterrupt:
+        print("\nExiting Eidos Assistant due to interrupt. Goodbye!")
+    except Exception as e:
+        print(f"An unexpected error occurred in the main loop: {e}")
     finally:
+        # This cleanup runs after the main loop exits (normally or due to exception/KeyboardInterrupt)
         if 'voice_interface' in locals() and hasattr(voice_interface, 'delete_porcupine') and voice_interface.porcupine:
              voice_interface.delete_porcupine() # Ensure Porcupine resources are freed if it was initialized
         print("Eidos Assistant session ended.")
@@ -397,4 +393,113 @@ def run_always_listening_mode(engine, voice_interface):
         print("Pathos: Exited always-listening mode.")
 
 if __name__ == '__main__':
-    run_assistant()
+    # run_assistant() # Commented out for dedicated RAG testing
+
+    print("\n--- Starting Eidos RAG System Test ---")
+    # This test sequence assumes LLMEngine and KnowledgeBase are correctly initialized.
+    # LLMEngine's __init__ will try to load .env for API keys, model names, etc.
+    # KnowledgeBase's __init__ (called by LLMEngine) sets up ChromaDB.
+
+    engine = LLMEngine() # Initialize the engine
+
+    if not engine.knowledge_base:
+        print("FATAL: KnowledgeBase not initialized in LLMEngine. Cannot proceed with RAG tests.")
+        sys.exit(1)
+
+    # Ensure the KB is clean for the test, if it's persistent and data might exist.
+    # The KB by default persists to eidos_assistant/data/kb_chroma_db/
+    # We should clear it before adding test documents.
+    print("\nClearing existing KnowledgeBase collection for a clean test run...")
+    if engine.knowledge_base.collection: # Check if collection exists
+        # A more direct way to clear a collection in ChromaDB is to delete and recreate it.
+        # Or, if the KB has a method like clear_collection() or delete_all_documents().
+        # The KnowledgeBase class has `delete_collection` and `clear_all_data_and_shutdown_persistent_client`
+        # For a full reset of this specific test, deleting the collection is good.
+        # If this test suite is the ONLY user of this collection name, then deleting is fine.
+        # Otherwise, be careful. Let's assume for this test, we can delete the default collection.
+        try:
+            collection_name = engine.knowledge_base.collection_name
+            engine.knowledge_base.delete_collection() # Deletes the collection
+            # Recreate it for the test
+            engine.knowledge_base.collection = engine.knowledge_base.client.get_or_create_collection(
+                name=collection_name
+            )
+            print(f"KnowledgeBase collection '{collection_name}' cleared and recreated for test.")
+        except Exception as e:
+            print(f"Error clearing/recreating collection: {e}. Test results may be affected by old data.")
+
+    # Define paths to sample files (relative to project root: eidos_assistant/)
+    # The script main.py is in eidos_assistant/, so relative paths like "data/..." are correct.
+    sky_doc_path = "data/test_doc_sky.txt"
+    eidos_doc_path = "data/test_doc_eidos.md"
+
+    # --- Test Ingestion ---
+    print("\n--- Testing Document Ingestion ---")
+    documents_to_ingest = {
+        "test_doc_sky": sky_doc_path,
+        "test_doc_eidos": eidos_doc_path
+    }
+
+    for doc_id, file_path in documents_to_ingest.items():
+        if not os.path.exists(file_path):
+            print(f"ERROR: Test file not found: {file_path}. Skipping ingestion for this file.")
+            continue
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            # Using the custom doc_id for clarity in tests
+            print(f"Ingesting document: '{file_path}' with ID: '{doc_id}'")
+            engine.knowledge_base.add_document(document_content=content, document_id=doc_id)
+            # add_document in KnowledgeBase should print its own chunking/success info.
+        except Exception as e:
+            print(f"Error ingesting document {file_path}: {e}")
+
+    # --- Test Queries ---
+    print("\n--- Testing Queries ---")
+    test_queries = [
+        "What color is the sky during the day?",
+        "What can be seen at night according to the documents?",
+        "Tell me about Eidos Assistant's features.",
+        "What is the capital of Canada?" # General knowledge, expect no KB context
+    ]
+
+    if not engine.client:
+        print("\nWARNING: LLM client not initialized in LLMEngine. Query responses will be error messages.")
+        print("Ensure your LLM server is running and accessible.")
+
+    for i, query_text in enumerate(test_queries):
+        print(f"\n--- Query {i+1}: \"{query_text}\" ---")
+        # The get_response method will internally try to use KB context
+        response = engine.get_response(query_text)
+        print(f"Pathos (Response to Query {i+1}): {response}")
+        time.sleep(1) # Small delay if hitting a rate-limited local LLM
+
+    # --- Cleanup ---
+    # This cleanup is important if the KB is persistent.
+    # The default KB path is 'eidos_assistant/data/kb_chroma_db'
+    print("\n--- Test Cleanup ---")
+    if engine.knowledge_base and engine.knowledge_base.persist_directory:
+        print(f"Attempting to clean up KnowledgeBase data from: {engine.knowledge_base.resolved_persist_directory}")
+        try:
+            # This method in KnowledgeBase should handle deleting the collection and rmtree
+            engine.knowledge_base.clear_all_data_and_shutdown_persistent_client()
+            print("KnowledgeBase persistence directory should now be cleaned up.")
+        except Exception as e:
+            print(f"Error during KnowledgeBase cleanup: {e}")
+            print(f"Manual cleanup of '{engine.knowledge_base.resolved_persist_directory}' might be needed.")
+    else:
+        print("KnowledgeBase is in-memory or was not initialized with a persist_directory. No disk cleanup needed by main.py for KB.")
+
+    # Also remove the test doc files created for this test run
+    try:
+        if os.path.exists(sky_doc_path):
+            os.remove(sky_doc_path)
+            print(f"Test file '{sky_doc_path}' removed.")
+        if os.path.exists(eidos_doc_path):
+            os.remove(eidos_doc_path)
+            print(f"Test file '{eidos_doc_path}' removed.")
+    except Exception as e:
+        print(f"Error removing test document files: {e}")
+
+
+    print("\n--- Eidos RAG System Test Complete ---")

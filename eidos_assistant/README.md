@@ -27,12 +27,14 @@ Pathos Assistant is a conversational AI assistant designed to be extensible and 
 ## Installation
 
 1.  Clone this repository.
-2.  Install required Python packages:
+2.  Install required Python packages. Navigate to the `eidos_assistant` directory (if you are in the parent directory that contains it) and run:
     ```bash
-    # pip install -r requirements.txt
-    # (requirements.txt will be added in a future step)
-    # For now, manually ensure the following are installed if not handled by subtasks:
-    # pip install PyYAML openai python-dotenv openai-whisper pvporcupine requests playsound PyAudio
+    pip install -r requirements.txt
+    # This file now includes all necessary dependencies.
+    # Key dependencies for core features include PyYAML, openai, python-dotenv.
+    # For voice: openai-whisper, pvporcupine, playsound, PyAudio.
+    # For Home Assistant: requests.
+    # For Knowledge Base (RAG): chromadb, sentence-transformers.
     ```
 
 ## Configuration via .env File
@@ -81,6 +83,19 @@ Make sure your `.env` file is added to your `.gitignore` to avoid committing sen
 **Natural Language Control for Home Assistant**
 Pathos can now understand natural language commands to control your Home Assistant devices (e.g., "turn on the lights", "check thermostat status") and can also list available devices to help you understand its capabilities.
 (Details as previously defined)
+
+
+## Knowledge Base (RAG)
+
+Pathos Assistant can build and use a local knowledge base to provide more informed answers. This is achieved through Retrieval Augmented Generation (RAG).
+
+Documents (currently plain text and Markdown files) can be added to the knowledge base. When you ask a question, Pathos will search these documents for relevant information and use that to augment its response from the LLM.
+
+This feature uses ChromaDB for storing document embeddings locally and Sentence-Transformers (specifically, the 'all-MiniLM-L6-v2' model by default) for generating these embeddings.
+
+The knowledge base data is persisted by default in the `eidos_assistant/data/kb_chroma_db/` directory.
+
+Note: The effectiveness of this feature depends on the quality of ingested documents and the relevance of your queries to their content.
 
 
 ## Running the Assistant
@@ -142,3 +157,7 @@ You can interact with the Eidos Assistant using special slash commands:
     *   Example: `/ha_toggle switch.smart_plug`
 *   `/ha_list_entities`: Retrieves and displays a list of all available entities from your Home Assistant instance, showing their entity ID, friendly name, and current state.
     *   Example: `/ha_list_entities`
+*   `/kb_add_file <file_path>`: Adds the content of the specified text or Markdown file to the knowledge base. The file name is used as the document ID.
+    *   Example: `/kb_add_file path/to/my_document.txt`
+*   `/kb_add_directory <directory_path>`: Recursively scans the specified directory for `.txt` and `.md` files and adds their content to the knowledge base. The relative path of each file from the specified directory is used as its document ID.
+    *   Example: `/kb_add_directory path/to/my_notes_folder/`

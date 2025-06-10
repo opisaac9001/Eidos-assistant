@@ -1,6 +1,6 @@
 # Pathos Assistant
 
-Pathos Assistant is a conversational AI assistant designed to be extensible and run locally, now with capabilities to interact with Home Assistant. This project is being developed iteratively.
+Pathos Assistant is a conversational AI assistant designed to be extensible and run locally. It can now understand natural language commands to control your Home Assistant devices (e.g., "turn on the lights", "check thermostat status") by intelligently forming requests to your Home Assistant server. This project is being developed iteratively.
 
 ## Prerequisites
 
@@ -94,6 +94,22 @@ Make sure your `.env` file is added to your `.gitignore` to avoid committing sen
     *   Click "Create Token", give it a name (e.g., "Pathos_Assistant"), and copy the generated token.
     *   **Important:** You will only see the token once. Store it securely.
 4.  Set this token as `HOME_ASSISTANT_TOKEN` in your `.env` file.
+
+**Natural Language Control for Home Assistant**
+
+When you give Pathos a command related to smart home devices (e.g., "Turn on the kitchen light," "Is the front door locked?"), Pathos's underlying Language Model (LLM) is instructed to translate your request into a specific JSON format. This JSON object precisely defines the action (like turning a device on/off or getting its status), the target device (entity ID), and any necessary parameters (like brightness or temperature). Pathos then processes this JSON command to interact with your Home Assistant server.
+
+This allows for more flexible and natural interaction than using only fixed slash commands. For this to work effectively:
+*   Your Home Assistant must be correctly configured in the `.env` file.
+*   The LLM must be capable of understanding your request and correctly formatting the JSON based on the instructions in its system prompt.
+*   You might need to be specific with entity names if you have many similar devices, or help Pathos learn them over time (future feature).
+
+Examples of what you can try:
+*   "Pathos, turn on the living room lamp."
+*   "Pathos, please switch off the bedroom fan."
+*   "Can you toggle the office air purifier?"
+*   "What is the current status of the main door lock?"
+*   "Set the thermostat to 21 degrees."
 
 
 ## Running the Assistant

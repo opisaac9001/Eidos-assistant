@@ -79,6 +79,7 @@ Make sure your `.env` file is added to your `.gitignore` to avoid committing sen
 (Details as previously defined)
 
 **Natural Language Control for Home Assistant**
+Pathos can now understand natural language commands to control your Home Assistant devices (e.g., "turn on the lights", "check thermostat status") and can also list available devices to help you understand its capabilities.
 (Details as previously defined)
 
 
@@ -139,3 +140,5 @@ You can interact with the Eidos Assistant using special slash commands:
     *   Example: `/ha_status light.living_room`
 *   `/ha_toggle <entity_id>`: Sends a 'toggle' command to the specified Home Assistant entity (e.g., to toggle a light or switch).
     *   Example: `/ha_toggle switch.smart_plug`
+*   `/ha_list_entities`: Retrieves and displays a list of all available entities from your Home Assistant instance, showing their entity ID, friendly name, and current state.
+    *   Example: `/ha_list_entities`

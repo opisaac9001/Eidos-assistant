@@ -189,8 +189,30 @@ def run_assistant():
                             print(f"Pathos: Toggle command sent for '{entity_id}'. Check Home Assistant for state change.")
                         else:
                             print(f"Pathos: Failed to send toggle command for '{entity_id}'.")
+                elif command == "/ha_list_entities":
+                    if not engine.ha_skill or not engine.ha_skill.ha_token or engine.ha_skill.ha_token == "YOUR_LONG_LIVED_ACCESS_TOKEN_HERE":
+                        print("Pathos: Home Assistant skill is not available or not configured. Please check your .env file.")
+                    else:
+                        print("Pathos: Retrieving list of entities from Home Assistant...")
+                        entities = engine.ha_skill.list_entities()
+                        if entities is not None:
+                            if not entities:
+                                print("Pathos: No entities found in Home Assistant.")
+                            else:
+                                print("Pathos: Found the following entities:")
+                                for entity in entities:
+                                    entity_id = entity.get('entity_id', 'Unknown ID')
+                                    friendly_name = entity.get('friendly_name', entity_id)
+                                    state = entity.get('state', 'Unknown State')
+                                    if friendly_name != entity_id:
+                                        print(f"  - {entity_id} [{friendly_name}] - State: {state}")
+                                    else:
+                                        print(f"  - {entity_id} - State: {state}")
+                                print(f"Pathos: Total entities found: {len(entities)}.")
+                        else:
+                            print("Pathos: Failed to retrieve entities from Home Assistant. Check logs for details.")
                 else:
-                    print(f"Eidos: Unknown command '{command}'. Try /remember, /recall, /forget, /say, /system_prompt, /listen, /always_listen, /ha_status, or /ha_toggle.")
+                    print(f"Eidos: Unknown command '{command}'. Try /remember, /recall, /forget, /say, /system_prompt, /listen, /always_listen, /ha_status, /ha_toggle, or /ha_list_entities.")
                 continue # Skip sending command to LLM
 
             # Only try to get LLM response if client is available

@@ -117,6 +117,51 @@ class HomeAssistantSkill:
 
         return None
 
+    def list_entities(self) -> list[dict] | None:
+        """
+        Retrieves a list of all entities and their basic information from Home Assistant.
+        Returns a list of entity dictionaries or None on error.
+        """
+        if not self.api_available and not self.check_api_status():
+            print("HomeAssistantSkill Error: API not available. Cannot list entities.")
+            return None
+        if not self.ha_token or self.ha_token == "YOUR_LONG_LIVED_ACCESS_TOKEN_HERE":
+            print("HomeAssistantSkill Error: Token not configured. Cannot list entities.")
+            return None
+
+        entities_api_url = f"{self.ha_url.rstrip('/')}/api/states"
+        print(f"HomeAssistantSkill: Listing entities from {entities_api_url}...")
+
+        try:
+            response = requests.get(entities_api_url, headers=self.headers, timeout=10) # Increased timeout for potentially large response
+            response.raise_for_status()  # Raises an HTTPError for bad responses (4XX or 5XX)
+
+            all_entities_data = response.json()
+            processed_entities = []
+            for entity_data in all_entities_data:
+                entity_id = entity_data.get('entity_id', 'Unknown Entity ID')
+                state = entity_data.get('state', 'Unknown State')
+                friendly_name = entity_data.get('attributes', {}).get('friendly_name', entity_id) # Default to entity_id if no friendly_name
+                processed_entities.append({
+                    'entity_id': entity_id,
+                    'state': state,
+                    'friendly_name': friendly_name
+                })
+
+            print(f"HomeAssistantSkill: Successfully retrieved and processed {len(processed_entities)} entities.")
+            return processed_entities
+
+        except requests.exceptions.HTTPError as e:
+            print(f"HomeAssistantSkill: HTTP error listing entities: {e}")
+        except requests.exceptions.Timeout:
+            print(f"HomeAssistantSkill: Timeout listing entities from {entities_api_url}.")
+        except requests.exceptions.RequestException as e:
+            print(f"HomeAssistantSkill: Error listing entities: {e}")
+        except Exception as e: # Catch any other unexpected errors
+            print(f"HomeAssistantSkill: An unexpected error occurred while listing entities: {e}")
+
+        return None # Return None in case of any exception
+
     def call_service(self, domain: str, service: str, service_data: dict) -> bool:
         """
         Calls a service in Home Assistant (e.g., to turn on a light, toggle a switch).
@@ -190,6 +235,22 @@ if __name__ == '__main__':
                 print(f"Correctly failed to retrieve state for '{non_existent_entity_id}' (expected failure).")
             else:
                 print(f"Unexpectedly retrieved state for '{non_existent_entity_id}': {state_non_existent}")
+
+            print("\n--- Testing list_entities ---")
+            entities = ha_skill.list_entities()
+            if entities is not None: # Check if it's not None (could be empty list on success)
+                print(f"Found {len(entities)} entities.")
+                if not entities: # Specifically check for an empty list
+                    print("  No entities found on the Home Assistant instance.")
+                else:
+                    # Print details of the first few entities as an example
+                    entities_to_show = 5
+                    for i, entity in enumerate(entities[:entities_to_show]):
+                        print(f"  Entity {i+1}: ID={entity.get('entity_id')}, State='{entity.get('state')}', FriendlyName='{entity.get('friendly_name')}'")
+                    if len(entities) > entities_to_show:
+                        print(f"  ... and {len(entities) - entities_to_show} more.")
+            else: # This means entities is None, indicating an error during the call
+                print("Could not retrieve entities list (call returned None). Check logs for errors.")
 
             print("\n--- Testing call_service (e.g., toggle a light) ---")
             # Users should change this to a valid entity_id from their HA setup for real testing.

@@ -144,6 +144,11 @@ class LLMEngine:
         prompt_parts.append("  \"action\": \"get_state\",")
         prompt_parts.append("  \"entity_id\": \"<full_entity_id_e.g., sensor.bedroom_temperature>\" ")
         prompt_parts.append("}")
+        prompt_parts.append("\nTo list all available entities:")
+        prompt_parts.append("{")
+        prompt_parts.append("  \"tool_name\": \"home_assistant\",")
+        prompt_parts.append("  \"action\": \"list_entities\"")
+        prompt_parts.append("}")
         prompt_parts.append("\nExamples of when to use this JSON format:")
         prompt_parts.append("User: \"Turn on the kitchen light.\"")
         prompt_parts.append("You: {\"tool_name\": \"home_assistant\", \"action\": \"call_service\", \"domain\": \"light\", \"service\": \"turn_on\", \"entity_id\": \"light.kitchen_light\", \"service_data\": {}}")
@@ -153,6 +158,8 @@ class LLMEngine:
         prompt_parts.append("You: {\"tool_name\": \"home_assistant\", \"action\": \"call_service\", \"domain\": \"climate\", \"service\": \"set_temperature\", \"entity_id\": \"climate.living_room\", \"service_data\": {\"temperature\": 20}}")
         prompt_parts.append("User: \"Toggle the office fan.\"")
         prompt_parts.append("You: {\"tool_name\": \"home_assistant\", \"action\": \"call_service\", \"domain\": \"switch\", \"service\": \"toggle\", \"entity_id\": \"switch.office_fan\", \"service_data\": {}}")
+        prompt_parts.append("User: \"What devices can you see in Home Assistant?\" or \"List all my entities.\"")
+        prompt_parts.append("You: {\"tool_name\": \"home_assistant\", \"action\": \"list_entities\"}")
         prompt_parts.append("\nIf the request is NOT about Home Assistant, or if you are unsure of the entity_id, domain, or service, respond normally as a helpful assistant without using the JSON format.")
         prompt_parts.append("--- End Home Assistant Control ---")
 
@@ -262,6 +269,36 @@ class LLMEngine:
                                 return f"Pathos: Sorry, I couldn't get the current state for '{entity_id}' from Home Assistant."
                         else:
                             return "Pathos: Home Assistant 'get_state' tool call was missing entity_id."
+                    elif action == "list_entities":
+                        if not self.ha_skill: # Should have been caught earlier, but double check
+                            return "Pathos: I want to list Home Assistant entities, but the skill is not available."
+
+                        entities = self.ha_skill.list_entities() # This now returns list[dict] or None
+
+                        if entities is not None:
+                            if entities: # List is not None and not empty
+                                entity_list_str = []
+                                for entity in entities:
+                                    # Using .get for safety, though the skill should provide these
+                                    entity_id_str = entity.get('entity_id', 'Unknown ID')
+                                    friendly_name_str = entity.get('friendly_name', entity_id_str) # Default to ID if no friendly name
+                                    if friendly_name_str != entity_id_str:
+                                        entity_list_str.append(f"{entity_id_str} ({friendly_name_str})")
+                                    else:
+                                        entity_list_str.append(entity_id_str)
+
+                                # Simple truncation for very long lists
+                                max_entities_to_list = 20 # Max entities to list directly
+                                if len(entity_list_str) > max_entities_to_list:
+                                    listed_entities = ", ".join(entity_list_str[:max_entities_to_list]) + f", and {len(entity_list_str) - max_entities_to_list} more."
+                                else:
+                                    listed_entities = ", ".join(entity_list_str)
+
+                                return f"Pathos: I found the following entities in Home Assistant: {listed_entities}. You can ask me for the state of any of these or ask me to control them."
+                            else: # List is empty
+                                return "Pathos: I didn't find any entities in Home Assistant."
+                        else: # entities is None, meaning an error occurred in the skill
+                            return "Pathos: Sorry, I encountered an error trying to list entities from Home Assistant."
                     else:
                         return f"Pathos: Unknown Home Assistant action: '{action}'."
                 else:
@@ -428,5 +465,27 @@ if __name__ == '__main__':
     simulated_malformed_json = '{\"tool_name\": \"home_assistant\", \"action\": \"call_service\", \"entity_id\": light.test_malformed'
     print(f"\nIf LLM produced malformed JSON like: {simulated_malformed_json}")
     print("(LLMEngine should treat this as a normal text response if JSON parsing fails.)")
+
+    # Test 4: Simulate LLM responding with "list_entities"
+    simulated_llm_json_output_list_entities = '''
+    {
+      "tool_name": "home_assistant",
+      "action": "list_entities"
+    }
+    '''
+    print(f"\nIf LLM produced: {simulated_llm_json_output_list_entities.strip()}")
+    # Conceptual: In a real test via get_response, this would trigger ha_skill.list_entities()
+    # and Pathos would respond with the list or an error/empty message.
+    # For this __main__ block, we're just showing the simulated LLM output.
+    # A direct call to engine.get_response(simulated_llm_json_output_list_entities) could be made
+    # if the ha_skill is mocked or a live HA instance is expected for testing.
+    # For now, this remains a conceptual print to show the LLM's part.
+    if engine.ha_skill:
+        print("Expected Pathos response (if HA skill is connected and returns entities): A list of entities.")
+        print("Expected Pathos response (if HA skill is connected and returns no entities): 'Pathos: I didn't find any entities in Home Assistant.'")
+        print("Expected Pathos response (if HA skill errors): 'Pathos: Sorry, I encountered an error trying to list entities from Home Assistant.'")
+    else:
+        print("Expected Pathos response (if HA skill is not available): 'Pathos: I want to list Home Assistant entities, but the skill is not available.'")
+
 
     print("\nLLMEngine direct execution test complete.")

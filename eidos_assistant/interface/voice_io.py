@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from openai import OpenAI, APIConnectionError, APIStatusError
 import whisper # Ensure whisper import is present
 import pvporcupine # Added for Wake Word
+from playsound import playsound, PlaysoundException # Added for playback
 
 # Construct path to .env in the eidos_assistant/ directory
 # Assumes voice_io.py is in eidos_assistant/interface/
@@ -132,12 +133,6 @@ class VoiceIO:
                 response_format="mp3"  # Kokoro-FastAPI supports mp3, wav, opus, flac
             )
 
-            # Ensure the directory for output_filename exists (if it includes a path)
-            # For this script, output_filename is relative to where voice_io.py is run (eidos_assistant/interface/)
-            # If main.py calls this, path might need adjustment or be absolute.
-            # The test __main__ block will make it in eidos_assistant/ root.
-
-            # Make output_filename relative to project root for consistency in tests.
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             abs_output_filename = os.path.join(project_root, output_filename)
 
@@ -147,17 +142,30 @@ class VoiceIO:
 
             response.stream_to_file(abs_output_filename)
             print(f"VoiceIO: Speech successfully saved to {abs_output_filename}")
-            return True
+
+            # Play the sound
+            print(f"VoiceIO: Attempting to play speech from {abs_output_filename}...")
+            try:
+                playsound(abs_output_filename)
+                print(f"VoiceIO: Finished playing {abs_output_filename}.")
+            except PlaysoundException as pse:
+                print(f"VoiceIO Warning: Error playing speech with playsound: {pse}. Ensure audio codecs (e.g., GStreamer for MP3 on Linux) are installed.")
+            except Exception as e:
+                print(f"VoiceIO Warning: An unexpected error occurred during audio playback: {e}")
+
+            return True # TTS Generation was successful
+
         except APIConnectionError as e:
             print(f"VoiceIO TTS Error: Failed to connect to Kokoro API at {self.kokoro_base_url}: {e}")
+            return False
         except APIStatusError as e:
             print(f"VoiceIO TTS Error: Kokoro API returned an error: Status {e.status_code}, Response: {e.response}")
-        except Exception as e:
-            print(f"VoiceIO TTS Error: An unexpected error occurred: {e}")
+            return False
+        except Exception as e: # General error during TTS generation
+            print(f"VoiceIO TTS Error: An unexpected error occurred during TTS generation: {e}")
+            return False
 
-        return False
-
-    def speech_to_text(self) -> str:
+    def speech_to_text(self, audio_file_path: str) -> str: # Modified to take audio_file_path
         """
         Transcribes audio from a file path using Whisper.
         Returns the transcribed text, or an empty string on failure.

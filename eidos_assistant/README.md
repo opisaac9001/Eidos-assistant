@@ -8,6 +8,8 @@ Pathos Assistant is a conversational AI assistant designed to be extensible and 
 *   Pip (Python package installer)
 *   Access to a local Large Language Model (LLM) server that is compatible with the OpenAI API.
 *   For Text-to-Speech (TTS) functionality with the `/say` command, a running instance of a Kokoro-FastAPI compatible server is needed.
+*   **For Direct TTS Audio Playback on Linux (via `/say` command):**
+    *   The `playsound` library (installed via pip) relies on GStreamer for playing MP3 files. You may need to install GStreamer and its Python introspection bindings if MP3 playback doesn't work. On Debian/Ubuntu, this might involve packages like `gir1.2-gstreamer-1.0`, `gstreamer1.0-plugins-good`, `gstreamer1.0-plugins-ugly`.
 *   **For Speech-to-Text (STT) functionality (`/listen` command):**
     *   The `openai-whisper` Python library (which includes `torch`). You can typically install this via `pip install openai-whisper`.
     *   `ffmpeg` installed on your system and available in your PATH. (e.g., `sudo apt install ffmpeg` on Debian/Ubuntu, or download from ffmpeg.org for other OS).
@@ -25,7 +27,7 @@ Pathos Assistant is a conversational AI assistant designed to be extensible and 
     # pip install -r requirements.txt
     # (requirements.txt will be added in a future step)
     # For now, manually ensure the following are installed if not handled by subtasks:
-    # pip install PyYAML openai python-dotenv openai-whisper pvporcupine requests
+    # pip install PyYAML openai python-dotenv openai-whisper pvporcupine requests playsound
     ```
 
 ## Configuration via .env File
@@ -172,8 +174,9 @@ You can interact with the Eidos Assistant using special slash commands:
 
 *   `/system_prompt`: (Debug command) Prints the current system prompt that the LLM engine is using.
 
-*   `/say <text to speak>`: Generates speech from the provided text using the configured TTS server and saves it to `eidos_tts_output.mp3` in the project root.
-    *   Example: `/say Hello, I am Eidos.`
+*   `/say <text to speak>`: Generates speech from the provided text using the configured TTS server, saves it to `eidos_tts_output.mp3`, and then attempts to play it directly.
+    *   Example: `/say Hello, I am Pathos.`
+    *   **Note on Playback (Linux):** The `playsound` library, used for playback, may require GStreamer and its Python bindings (e.g., `python3-gi`, `gir1.2-gstreamer-1.0`) to be installed on your Linux system to play MP3 files. On Windows and macOS, it typically works without extra steps for MP3s. Playback is blocking (the assistant will wait until sound finishes).
 
 *   `/listen <path_to_audio_file>`: Transcribes the audio from the specified file using Whisper STT and displays the text.
     *   Example: `/listen path/to/my_audio.wav`

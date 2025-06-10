@@ -130,9 +130,12 @@ def run_assistant():
                         print(f"Eidos: Attempting to generate speech for: '{text_to_speak[:50]}...'")
                         output_filename = "eidos_tts_output.mp3"
                         if voice_interface.text_to_speech(text_to_speak, output_filename=output_filename):
-                            print(f"Eidos: Speech saved to {output_filename}. You can play it with an audio player.")
+                            print(f"Pathos: Speech saved to {output_filename}.")
+                            # VoiceIO.text_to_speech now attempts playback internally and prints messages about it.
+                            # We just add a general note here.
+                            print(f"Pathos: Attempting to play audio...")
                         else:
-                            print(f"Eidos: Sorry, I couldn't generate speech. Check logs or TTS server status.")
+                            print(f"Pathos: Sorry, I couldn't generate speech. Check logs or TTS server status.")
 
                 elif command == "/listen":
                     audio_file_path = args_str.strip()

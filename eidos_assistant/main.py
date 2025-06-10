@@ -172,6 +172,112 @@ def run_assistant():
             print(f"An unexpected error occurred: {e}")
             # Optionally, decide if the loop should break on all errors
             # break
+    # Ensure Porcupine is cleaned up if it was initialized, though run_always_listening_mode handles its own.
+    # This is more of a general cleanup if VoiceIO was used elsewhere and main is exiting.
+    finally:
+        if 'voice_interface' in locals() and hasattr(voice_interface, 'delete_porcupine'):
+            voice_interface.delete_porcupine() # Call if porcupine might have been used outside always_listening
+        print("Eidos Assistant session ended.")
+
+
+def run_always_listening_mode(engine, voice_interface):
+    print("\n--- Pathos Always-Listening Mode (Conceptual) ---")
+    if not voice_interface.porcupine:
+        print("Pathos: Porcupine Wake Word engine not initialized. Cannot start always-listening mode.")
+        print("Pathos: Please check your PICOVOICE_ACCESS_KEY and Porcupine configurations in .env and README.")
+        return
+
+    print(f"Pathos: Listening for wake word(s): {voice_interface.porcupine_keywords_list}...")
+    print(f"Pathos: (This is a conceptual loop. Actual microphone input and continuous STT are not implemented here.)")
+    print("Pathos: To exit this conceptual mode, type 'quit' or 'exit' if a prompt appears, or use Ctrl+C.")
+
+    # Conceptual loop - in a real scenario, this would involve an audio stream.
+    # For this placeholder, we'll just simulate a few iterations or wait for user input to break.
+    try:
+        # --- Placeholder for audio input library setup (e.g., PyAudio) ---
+        # Example (conceptual, PyAudio not installed or used here):
+        # import pyaudio
+        # pa = pyaudio.PyAudio()
+        # audio_stream = pa.open(
+        #     rate=voice_interface.porcupine.sample_rate, # Should be 16000 for Porcupine
+        #     channels=1,
+        #     format=pyaudio.paInt16, # Porcupine needs int16
+        #     input=True,
+        #     frames_per_buffer=voice_interface.porcupine_frame_length
+        # )
+        # print("Pathos: (Conceptual) Microphone stream opened.")
+        # --- End of placeholder ---
+
+        active_listening_for_command = False
+        # In a real app, you'd have a way to buffer audio after wake word,
+        # or start a dedicated STT recording session.
+
+        # Simulate a few checks or a way to break for this conceptual demo
+        for i in range(5): # Simulate a few cycles for demo purposes
+            print(f"\nPathos (Conceptual Listen Cycle {i+1}):")
+
+            # --- Placeholder for reading audio frame ---
+            # conceptual_audio_frame = list(audio_stream.read(voice_interface.porcupine_frame_length))
+            # For this demo, we don't have real audio.
+            # We can't call process_audio_chunk_for_wakeword without a real frame.
+            # So, we'll simulate a wake word detection manually for one cycle.
+            # --- End of placeholder ---
+
+            if i == 2: # Simulate wake word detection on the 3rd conceptual cycle
+                if not voice_interface.porcupine_keywords_list: # Check if list is empty
+                    print("Pathos: (Conceptual) No keywords configured for detection.")
+                else:
+                    detected_keyword_index = 0 # Simulate first configured keyword detected
+                    print(f"Pathos: Wake word '{voice_interface.porcupine_keywords_list[detected_keyword_index]}' detected conceptually!")
+                    active_listening_for_command = True
+
+                    # --- Placeholder for starting STT after wake word ---
+                    print("Pathos: (Conceptual) Would now listen for command via STT...")
+                    # In a real app:
+                    # 1. Start buffering/recording audio for STT.
+                    # 2. After a pause or fixed duration, stop recording.
+                    # 3. Save to a temporary file.
+                    # temp_audio_file = "temp_stt_command.wav" # Needs to be in a writable location
+                    # transcribed_command = voice_interface.speech_to_text(temp_audio_file)
+                    # print(f"Pathos (Conceptual STT): Transcribed: '{transcribed_command}'")
+                    # if transcribed_command and not transcribed_command.startswith("[STT"):
+                    #     response = engine.get_response(transcribed_command)
+                    #     print(f"Pathos: {response}")
+                    #     if voice_interface.tts_client: # If TTS is available
+                    #         # This output_filename should ideally be unique or managed
+                    #         tts_output_file = "pathos_response.mp3"
+                    #         voice_interface.text_to_speech(response, output_filename=tts_output_file)
+                    #         print(f"Pathos: (Conceptual) Spoke response. Audio saved to {tts_output_file}.")
+                    # else:
+                    #     print("Pathos: (Conceptual STT) No command transcribed or STT error.")
+                    # if os.path.exists(temp_audio_file): os.remove(temp_audio_file) # Clean up
+                    # --- End of placeholder ---
+
+                    active_listening_for_command = False # Reset
+                    print("Pathos: (Conceptual) Returning to listening for wake word...")
+            else:
+                print("Pathos: (Conceptual) No wake word detected in this cycle.")
+
+            # Simulate a short delay as audio frames would come in over time
+            # import time
+            # time.sleep(0.1) # Not using time.sleep to avoid subtask issues.
+
+        print("\nPathos: (Conceptual) Always-listening demo cycles finished.")
+
+    except KeyboardInterrupt:
+        print("\nPathos: Always-listening mode interrupted by user.")
+    finally:
+        # --- Placeholder for closing audio stream ---
+        # if 'audio_stream' in locals() and audio_stream.is_active():
+        #    audio_stream.stop_stream()
+        #    audio_stream.close()
+        # if 'pa' in locals():
+        #    pa.terminate()
+        # print("Pathos: (Conceptual) Microphone stream closed.")
+        # --- End of placeholder ---
+        if voice_interface.porcupine: # Ensure delete is called if porcupine was init'd
+            voice_interface.delete_porcupine()
+        print("Pathos: Exited always-listening mode.")
 
 if __name__ == '__main__':
     run_assistant()

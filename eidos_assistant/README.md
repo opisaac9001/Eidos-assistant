@@ -11,6 +11,9 @@ Eidos Assistant is a conversational AI assistant designed to be extensible and r
 *   **For Speech-to-Text (STT) functionality (`/listen` command):**
     *   The `openai-whisper` Python library (which includes `torch`). You can typically install this via `pip install openai-whisper`.
     *   `ffmpeg` installed on your system and available in your PATH. (e.g., `sudo apt install ffmpeg` on Debian/Ubuntu, or download from ffmpeg.org for other OS).
+*   **For Wake Word Detection (e.g., `/always_listen` command):**
+    *   The `pvporcupine` Python library. (`pip install pvporcupine`)
+    *   A Picovoice AccessKey (see Configuration section).
 
 ## Installation
 
@@ -20,7 +23,7 @@ Eidos Assistant is a conversational AI assistant designed to be extensible and r
     # pip install -r requirements.txt
     # (requirements.txt will be added in a future step)
     # For now, manually ensure the following are installed if not handled by subtasks:
-    # pip install PyYAML openai python-dotenv openai-whisper
+    # pip install PyYAML openai python-dotenv openai-whisper pvporcupine
     ```
 
 ## Configuration via .env File
@@ -41,6 +44,13 @@ KOKORO_TTS_BASE_URL="http://localhost:8880/v1"
 KOKORO_TTS_API_KEY="not-needed" # Or your actual API key if required
 KOKORO_TTS_VOICE="af_sky"
 # Example voices: "af_sky+af_bella" (blended), "af_bella(2)+af_heart(1)" (weighted)
+
+# Porcupine Wake Word Engine Configuration
+PICOVOICE_ACCESS_KEY="YOUR_PICOVOICE_ACCESS_KEY_HERE"
+PORCUPINE_BUILTIN_KEYWORDS="picovoice"
+PORCUPINE_KEYWORD_PATHS=""
+PORCUPINE_MODEL_PATH=""
+PORCUPINE_SENSITIVITIES=""
 ```
 
 **Key Environment Variables:**
@@ -50,9 +60,23 @@ KOKORO_TTS_VOICE="af_sky"
 *   `KOKORO_TTS_BASE_URL`: The base URL for your Kokoro-FastAPI TTS server.
 *   `KOKORO_TTS_API_KEY`: The API key for your TTS server (if required, typically "not-needed" for local Kokoro-FastAPI).
 *   `KOKORO_TTS_VOICE`: The default voice to be used for TTS. Consult your Kokoro-FastAPI documentation for available voices.
+*   `PICOVOICE_ACCESS_KEY`: Your AccessKey from the [Picovoice Console](https://console.picovoice.ai/). Required for Porcupine Wake Word.
+*   `PORCUPINE_BUILTIN_KEYWORDS`: Optional. A comma-separated list of built-in keywords to detect (e.g., "picovoice", "bumblebee"). Defaults to "picovoice".
+*   `PORCUPINE_KEYWORD_PATHS`: Optional. A comma-separated list of absolute paths to custom `.ppn` wake word model files. If you want to use "Pathos" as a wake word, you'll need to create a model for it on the Picovoice Console and provide the path here.
+*   `PORCUPINE_MODEL_PATH`: Optional. Path to a Porcupine model file (`.pv`) for non-English language support. Defaults to English.
+*   `PORCUPINE_SENSITIVITIES`: Optional. A comma-separated list of sensitivity values (0.0 to 1.0) for each keyword. Must match the number and order of combined built-in and custom keywords.
+
 
 The application will attempt to load these variables. If `.env` is not found or a variable is missing, fallback default values will be used (which also point to common local server addresses).
 Make sure your `.env` file is added to your `.gitignore` to avoid committing sensitive information.
+
+**Setting up Porcupine Wake Word:**
+1.  Sign up for a free account at [Picovoice Console](https://console.picovoice.ai/).
+2.  Copy your `AccessKey` from the console and set it as `PICOVOICE_ACCESS_KEY` in your `.env` file.
+3.  Porcupine can detect built-in keywords (like "picovoice", "bumblebee", "grasshopper", etc. - check Picovoice documentation for the full list for English). You can list desired ones in `PORCUPINE_BUILTIN_KEYWORDS`.
+4.  To use custom wake words (e.g., "Pathos"), you need to train a model on the Picovoice Console. This will generate a `.ppn` file. Provide the full path to this file (or multiple, comma-separated) in `PORCUPINE_KEYWORD_PATHS`.
+5.  If using only built-in keywords, `PORCUPINE_KEYWORD_PATHS` can be left empty. If using only custom keywords, `PORCUPINE_BUILTIN_KEYWORDS` can be left empty. Both can be used together.
+
 
 ## Running the Assistant
 
@@ -71,16 +95,19 @@ The assistant is configured by default to attempt to connect to an LLM at `http:
 
 Ensure your servers are running *before* starting the Eidos Assistant. If the assistant cannot connect, it will indicate an error or relevant commands may fail.
 
-**Important Note on Speech-to-Text (STT):**
+**Important Notes on Advanced Voice Features (STT & Wake Word):**
 
-The Speech-to-Text (STT) functionality (e.g., the `/listen` command) using Whisper has been implemented in the codebase but **could not be tested by the AI assistant developer due to limitations in the development sandbox environment** (specifically, issues installing large dependencies like `torch` which is part of `openai-whisper`).
+Features like Speech-to-Text (STT) via the `/listen` command (using Whisper) and the planned Wake Word detection (using Porcupine, e.g., via `/always_listen`) have been implemented or designed in the codebase but **could not be fully tested by the AI assistant developer due to limitations in the development sandbox environment.** These limitations include issues installing large dependencies (like `torch` for Whisper) or accessing hardware like microphones.
 
-Users wishing to use STT must:
-1.  Ensure `openai-whisper` is installed in their Python environment (`pip install openai-whisper`).
-2.  Ensure `ffmpeg` is installed on their system and accessible in the PATH.
-3.  Verify that Whisper can download its models (e.g., `base.en`) which requires an internet connection on first run.
+Users wishing to use these advanced voice features must:
+1.  **For STT:** Ensure `openai-whisper` is installed (`pip install openai-whisper`), `ffmpeg` is on the system PATH, and Whisper models can be downloaded.
+2.  **For Wake Word:**
+    *   Ensure `pvporcupine` is installed (`pip install pvporcupine`).
+    *   Obtain a `PICOVOICE_ACCESS_KEY` from the [Picovoice Console](https://console.picovoice.ai/) and configure it in the `.env` file.
+    *   Configure built-in keywords (e.g., via `PORCUPINE_BUILTIN_KEYWORDS="picovoice"`) or paths to custom `.ppn` model files (via `PORCUPINE_KEYWORD_PATHS`) in the `.env` file.
+3.  **For a functional always-listening loop (using Wake Word and STT):** Implement real-time microphone audio capture (e.g., using a library like PyAudio or sounddevice) and integrate it with the conceptual loop provided in `main.py`. This part is not pre-implemented.
 
-The successful operation of STT features is contingent upon the user's local setup meeting these requirements.
+The successful operation of these features is contingent upon the user's local setup meeting these specific requirements. The core logic for STT and Wake Word detection has been added to `VoiceIO` but could not be live-tested by the AI assistant developer.
 
 ## Project Structure
 
@@ -118,3 +145,6 @@ You can interact with the Eidos Assistant using special slash commands:
 *   `/listen <path_to_audio_file>`: Transcribes the audio from the specified file using Whisper STT and displays the text.
     *   Example: `/listen path/to/my_audio.wav`
     *   **Note:** This command requires `openai-whisper` and `ffmpeg` to be correctly installed and configured in your environment. The STT model (`base.en` by default) will be downloaded by Whisper on first use.
+
+*   `/always_listen`: Activates a conceptual "always-listening" mode.
+    *   **Note:** This command in its current state initiates a placeholder loop. It demonstrates where wake word detection using Porcupine would occur if live microphone audio processing were fully implemented. It does not currently process live audio. To make this functional, you would need to integrate an audio input library (e.g., PyAudio, sounddevice) to continuously feed audio data to the Porcupine engine within `VoiceIO`.

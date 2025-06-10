@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 from openai import OpenAI, APIConnectionError, APIStatusError
 import whisper # Ensure whisper import is present
+import pvporcupine # Added for Wake Word
 
 # Construct path to .env in the eidos_assistant/ directory
 # Assumes voice_io.py is in eidos_assistant/interface/
@@ -42,6 +43,73 @@ class VoiceIO:
         # Ensure self.stt_model is defined even if all try-excepts were somehow bypassed, though unlikely
         if not hasattr(self, 'stt_model'):
             self.stt_model = None
+
+        print("VoiceIO: Attempting to initialize Porcupine Wake Word Engine...")
+        self.porcupine = None
+        self.porcupine_frame_length = None
+        self.porcupine_keywords_list = [] # To store the actual keywords being used
+
+        try:
+            access_key = os.getenv("PICOVOICE_ACCESS_KEY")
+            if not access_key or access_key == "YOUR_PICOVOICE_ACCESS_KEY_HERE":
+                print("VoiceIO Warning: PICOVOICE_ACCESS_KEY not set in .env or is placeholder. Porcupine will not initialize.")
+                raise ValueError("Missing PICOVOICE_ACCESS_KEY")
+
+            builtin_keywords_str = os.getenv("PORCUPINE_BUILTIN_KEYWORDS", "picovoice") # Default to 'picovoice'
+            keyword_paths_str = os.getenv("PORCUPINE_KEYWORD_PATHS", "")
+            model_path_str = os.getenv("PORCUPINE_MODEL_PATH", None) # Defaults to None for standard English model
+            sensitivities_str = os.getenv("PORCUPINE_SENSITIVITIES", "")
+
+            keywords = []
+            if builtin_keywords_str:
+                keywords.extend([k.strip() for k in builtin_keywords_str.split(',') if k.strip()])
+
+            keyword_paths = []
+            if keyword_paths_str:
+                keyword_paths.extend([p.strip() for p in keyword_paths_str.split(',') if p.strip()])
+
+            if not keywords and not keyword_paths:
+                print("VoiceIO Warning: No built-in keywords or keyword_paths provided for Porcupine. Porcupine will not initialize.")
+                raise ValueError("No keywords or keyword_paths for Porcupine")
+
+            self.porcupine_keywords_list = keywords + [os.path.basename(p) for p in keyword_paths] # Store for reference
+
+            sensitivities = None
+            if sensitivities_str:
+                try:
+                    sensitivities = [float(s.strip()) for s in sensitivities_str.split(',') if s.strip()]
+                    if len(sensitivities) != (len(keywords) + len(keyword_paths)):
+                        print(f"VoiceIO Warning: Number of sensitivities ({len(sensitivities)}) does not match number of keywords ({len(keywords) + len(keyword_paths)}). Using default sensitivities.")
+                        sensitivities = None
+                except ValueError:
+                    print("VoiceIO Warning: Invalid format for PORCUPINE_SENSITIVITIES. Using default sensitivities.")
+                    sensitivities = None
+
+            init_args = {"access_key": access_key}
+            if keywords: # pvporcupine uses 'keywords' for built-in
+                init_args["keywords"] = keywords
+            if keyword_paths: # and 'keyword_paths' for custom .ppn files
+                init_args["keyword_paths"] = keyword_paths
+            if model_path_str and model_path_str.strip(): # Only add if provided and not empty
+                init_args["model_path"] = model_path_str.strip()
+            if sensitivities:
+                init_args["sensitivities"] = sensitivities
+
+            self.porcupine = pvporcupine.create(**init_args)
+            self.porcupine_frame_length = self.porcupine.frame_length
+            print(f"VoiceIO: Porcupine initialized successfully with keywords: {self.porcupine_keywords_list}, frame_length: {self.porcupine_frame_length}.")
+
+        except ImportError:
+            print("VoiceIO Error: pvporcupine library not found. Wake word detection will be unavailable.")
+            print("Please ensure 'pvporcupine' is installed in your environment.")
+        except pvporcupine.PorcupineError as pe: # Catch specific Porcupine errors
+            print(f"VoiceIO Error: Porcupine engine error: {pe}")
+            print("This could be due to an invalid AccessKey, model file issues, or other configuration problems.")
+        except ValueError as ve: # Catch our own ValueErrors for config issues
+            print(f"VoiceIO Error: Porcupine configuration error: {ve}")
+        except Exception as e:
+            print(f"VoiceIO Error: Failed to initialize Porcupine: {e}")
+            print("Wake word detection will be unavailable.")
 
 
     def text_to_speech(self, text: str, voice: str = None, output_filename: str = "eidos_tts_output.mp3") -> bool:
@@ -116,6 +184,45 @@ class VoiceIO:
             print(f"VoiceIO STT Error: An error occurred during transcription: {e}")
             return "[STT Transcription Error]"
 
+    def process_audio_chunk_for_wakeword(self, audio_chunk_pcm: list[int]) -> int:
+        """
+        Processes a chunk of audio data for wake word detection.
+        audio_chunk_pcm: A list/tuple of int16 PCM samples. Must be of length porcupine.frame_length.
+        Returns: Index of the detected keyword if a wake word is detected (e.g., 0, 1, ...),
+                 -1 otherwise.
+        NOTE: This method is untested by the AI assistant. User must ensure correct setup.
+        """
+        if not self.porcupine:
+            # print("VoiceIO Debug: Porcupine not initialized, skipping wake word processing.") # Can be too noisy
+            return -1
+
+        if len(audio_chunk_pcm) != self.porcupine_frame_length:
+            print(f"VoiceIO Error: Audio chunk length ({len(audio_chunk_pcm)}) does not match Porcupine frame length ({self.porcupine_frame_length}).")
+            return -1
+
+        try:
+            keyword_index = self.porcupine.process(audio_chunk_pcm)
+            # if keyword_index >= 0:
+            #    print(f"VoiceIO Debug: Wake word detected with index: {keyword_index}") # Can be too noisy
+            return keyword_index # Will be -1 if no keyword detected, or 0, 1, ... if detected
+        except pvporcupine.PorcupineError as e:
+            print(f"VoiceIO Error: Porcupine process error: {e}")
+            return -1
+        except Exception as e:
+            print(f"VoiceIO Error: Unexpected error during Porcupine process: {e}")
+            return -1
+
+    def delete_porcupine(self):
+        """Releases resources acquired by Porcupine."""
+        if self.porcupine:
+            print("VoiceIO: Deleting Porcupine instance...")
+            try:
+                self.porcupine.delete()
+                self.porcupine = None
+                print("VoiceIO: Porcupine instance deleted.")
+            except Exception as e:
+                print(f"VoiceIO Error: Failed to delete Porcupine instance: {e}")
+
 if __name__ == '__main__':
     print("\nTesting VoiceIO module (TTS with Kokoro-FastAPI)...")
     # Ensure .env is in the project root (eidos_assistant/) for this test to pick it up.
@@ -174,4 +281,23 @@ if __name__ == '__main__':
         transcription_attempt = voice_interface.speech_to_text(non_existent_file)
         print(f"VoiceIO STT: Attempt to transcribe '{non_existent_file}' returned: '{transcription_attempt}' (expected '[Audio File Not Found]').")
 
-    print("\n--- End of VoiceIO __main__ tests ---")
+    # --- Porcupine Wake Word Test Section (Untested by Assistant) ---
+    print("\n--- Porcupine Wake Word Test Section (Untested by Assistant) ---")
+    if not voice_interface.porcupine:
+        print("VoiceIO Porcupine: Skipping wake word test as Porcupine did not initialize (see errors above).")
+        print("VoiceIO Porcupine: Ensure 'pvporcupine' is installed, PICOVOICE_ACCESS_KEY is valid, and keyword/model paths are correct.")
+    else:
+        print(f"VoiceIO Porcupine: Initialized with keywords: {voice_interface.porcupine_keywords_list}")
+        print(f"VoiceIO Porcupine: Expected audio frame length: {voice_interface.porcupine_frame_length}")
+        # Example of how a user might test with a dummy audio frame:
+        # This requires a source of audio data, e.g., from a microphone or file,
+        # correctly formatted as a list of int16 PCM samples of porcupine.frame_length.
+        print("VoiceIO Porcupine: To test, you would need to feed audio frames of the correct length.")
+        # dummy_frame = [0] * voice_interface.porcupine_frame_length
+        # keyword_idx = voice_interface.process_audio_chunk_for_wakeword(dummy_frame)
+        # print(f"VoiceIO Porcupine: Processing dummy frame returned: {keyword_idx} (expected -1 for silence)")
+
+    # Example of calling delete
+    # voice_interface.delete_porcupine()
+
+    print("\n--- End of VoiceIO __main__ tests (after adding Porcupine) ---")

@@ -4,6 +4,11 @@ from openai import OpenAI, APIConnectionError, APIStatusError
 import whisper # Ensure whisper import is present
 import pvporcupine # Added for Wake Word
 from playsound import playsound, PlaysoundException # Added for playback
+import pyaudio # For microphone input
+import wave    # For saving recorded audio for STT
+import struct  # For converting audio bytes to int16 samples
+import time    # For STT recording duration
+
 
 # Construct path to .env in the eidos_assistant/ directory
 # Assumes voice_io.py is in eidos_assistant/interface/
@@ -112,6 +117,140 @@ class VoiceIO:
             print(f"VoiceIO Error: Failed to initialize Porcupine: {e}")
             print("Wake word detection will be unavailable.")
 
+        # PyAudio attributes
+        self.pyaudio_instance = None
+        self.audio_stream = None
+        self.audio_stream_sample_rate = 16000 # Standard for Porcupine/Whisper
+        self.audio_stream_channels = 1 # Mono
+        # self.porcupine_frame_length should be set if Porcupine initialized successfully
+        # If not, audio streaming for wake word won't work properly.
+        self.audio_chunk_size = getattr(self.porcupine, 'frame_length', 512) # Default to 512 if not set by Porcupine
+
+
+    def start_audio_stream(self) -> bool:
+        """Initializes PyAudio and opens an audio input stream."""
+        if not self.porcupine: # Porcupine needed for frame_length to ensure compatibility
+            print("VoiceIO Error: Porcupine not initialized. Cannot determine audio frame length for stream.")
+            # Fallback or error, for now let's error out if we intended to use it with Porcupine
+            # If a generic stream is needed without porcupine, this check could be removed or conditional.
+            return False
+        if self.audio_stream and self.audio_stream.is_active():
+            print("VoiceIO Info: Audio stream already active.")
+            return True
+        try:
+            self.pyaudio_instance = pyaudio.PyAudio()
+            self.audio_stream = self.pyaudio_instance.open(
+                format=pyaudio.paInt16,
+                channels=self.audio_stream_channels,
+                rate=self.audio_stream_sample_rate,
+                input=True,
+                frames_per_buffer=self.audio_chunk_size # Use Porcupine's frame length
+            )
+            print(f"VoiceIO: Audio stream started. Format: paInt16, Rate: {self.audio_stream_sample_rate}, Channels: {self.audio_stream_channels}, Frame Size: {self.audio_chunk_size}")
+            return True
+        except Exception as e:
+            print(f"VoiceIO Error: Could not start PyAudio stream: {e}")
+            self.pyaudio_instance = None
+            self.audio_stream = None
+            return False
+
+    def read_audio_stream_chunk(self) -> list[int] | None:
+        """Reads a chunk of audio data from the stream, formatted for Porcupine."""
+        if not self.audio_stream or not self.audio_stream.is_active():
+            print("VoiceIO Error: Audio stream not active or not initialized.")
+            return None
+        try:
+            data_bytes = self.audio_stream.read(self.audio_chunk_size, exception_on_overflow=False)
+            num_samples = len(data_bytes) // 2
+            pcm_data = struct.unpack('%dh' % num_samples, data_bytes)
+            return list(pcm_data)
+        except IOError as e:
+            print(f"VoiceIO Error: PyAudio stream read error: {e}")
+            return None
+        except Exception as e:
+            print(f"VoiceIO Error: Unexpected error reading audio stream: {e}")
+            return None
+
+    def stop_audio_stream(self):
+        """Stops and closes the audio stream and terminates PyAudio."""
+        if self.audio_stream:
+            try:
+                if self.audio_stream.is_active():
+                    self.audio_stream.stop_stream()
+                self.audio_stream.close()
+                print("VoiceIO: Audio stream stopped and closed.")
+            except Exception as e:
+                print(f"VoiceIO Error: Exception while stopping/closing audio stream: {e}")
+            finally:
+                self.audio_stream = None
+
+        if self.pyaudio_instance:
+            try:
+                self.pyaudio_instance.terminate()
+                print("VoiceIO: PyAudio instance terminated.")
+            except Exception as e:
+                print(f"VoiceIO Error: Exception while terminating PyAudio instance: {e}")
+            finally:
+                self.pyaudio_instance = None
+
+    def record_audio_for_stt(self, duration_seconds: int, temp_filename: str = "temp_stt_audio.wav") -> str | None:
+        """Records audio from the microphone for a specified duration and saves it to a WAV file."""
+        print(f"VoiceIO: Starting {duration_seconds}s audio recording for STT, saving to {temp_filename}...")
+
+        record_pa = None
+        record_stream = None
+        frames = []
+
+        try:
+            record_pa = pyaudio.PyAudio()
+            record_stream = record_pa.open(
+                format=pyaudio.paInt16,
+                channels=self.audio_stream_channels,
+                rate=self.audio_stream_sample_rate,
+                input=True,
+                frames_per_buffer=self.audio_chunk_size
+            )
+
+            num_chunks_to_record = int((self.audio_stream_sample_rate / self.audio_chunk_size) * duration_seconds)
+            print(f"VoiceIO: Recording {num_chunks_to_record} chunks of size {self.audio_chunk_size}...")
+
+            for _ in range(num_chunks_to_record):
+                data_bytes = record_stream.read(self.audio_chunk_size, exception_on_overflow=False)
+                frames.append(data_bytes)
+
+            print("VoiceIO: Recording finished.")
+
+        except Exception as e:
+            print(f"VoiceIO Error during STT recording: {e}")
+            return None
+        finally:
+            if record_stream:
+                record_stream.stop_stream()
+                record_stream.close()
+            if record_pa:
+                record_pa.terminate()
+
+        if not frames:
+            print("VoiceIO Error: No frames recorded for STT.")
+            return None
+
+        try:
+            # Ensure temp_filename is in a writable directory, e.g., project root for this example
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            abs_temp_filename = os.path.join(project_root, temp_filename)
+
+            wf = wave.open(abs_temp_filename, 'wb')
+            wf.setnchannels(self.audio_stream_channels)
+            # Use 2 for sample width (pyaudio.paInt16) if record_pa is already terminated
+            wf.setsampwidth(record_pa.get_sample_size(pyaudio.paInt16) if record_pa and hasattr(record_pa, 'get_sample_size') else 2)
+            wf.setframerate(self.audio_stream_sample_rate)
+            wf.writeframes(b''.join(frames))
+            wf.close()
+            print(f"VoiceIO: STT audio successfully saved to {abs_temp_filename}")
+            return abs_temp_filename
+        except Exception as e:
+            print(f"VoiceIO Error: Failed to save STT audio to WAV file '{abs_temp_filename}': {e}")
+            return None
 
     def text_to_speech(self, text: str, voice: str = None, output_filename: str = "eidos_tts_output.mp3") -> bool:
         """
@@ -225,11 +364,15 @@ class VoiceIO:
         if self.porcupine:
             print("VoiceIO: Deleting Porcupine instance...")
             try:
+                self.stop_audio_stream() # Ensure stream is stopped if porcupine was using it
                 self.porcupine.delete()
                 self.porcupine = None
                 print("VoiceIO: Porcupine instance deleted.")
             except Exception as e:
                 print(f"VoiceIO Error: Failed to delete Porcupine instance: {e}")
+        else: # If porcupine wasn't even initialized, ensure any stray stream is closed.
+            self.stop_audio_stream()
+
 
 if __name__ == '__main__':
     print("\nTesting VoiceIO module (TTS with Kokoro-FastAPI)...")
@@ -305,7 +448,35 @@ if __name__ == '__main__':
         # keyword_idx = voice_interface.process_audio_chunk_for_wakeword(dummy_frame)
         # print(f"VoiceIO Porcupine: Processing dummy frame returned: {keyword_idx} (expected -1 for silence)")
 
-    # Example of calling delete
-    # voice_interface.delete_porcupine()
+    # --- PyAudio Streaming Test Section (Conceptual - Untested by Assistant) ---
+    print("\n--- PyAudio Streaming Test Section (Conceptual - Untested by Assistant) ---")
+    if voice_interface.porcupine and voice_interface.porcupine_frame_length: # Need frame length for stream
+        print("VoiceIO PyAudio: Attempting to test audio stream start/stop (no actual reading).")
+        if voice_interface.start_audio_stream():
+            print("VoiceIO PyAudio: Stream started conceptually.")
+            # In a real test, you might try:
+            # chunk = voice_interface.read_audio_stream_chunk()
+            # if chunk: print(f"Read {len(chunk)} samples.")
+            voice_interface.stop_audio_stream()
+            print("VoiceIO PyAudio: Stream stopped conceptually.")
+        else:
+            print("VoiceIO PyAudio: Failed to start stream conceptually. Check PyAudio/PortAudio installation and microphone.")
 
-    print("\n--- End of VoiceIO __main__ tests (after adding Porcupine) ---")
+        print("\nVoiceIO PyAudio: Attempting to test STT recording (conceptual).")
+        # Test recording will try to create file in project root (eidos_assistant/)
+        temp_stt_file = voice_interface.record_audio_for_stt(duration_seconds=1, temp_filename="test_stt_rec.wav")
+        if temp_stt_file and os.path.exists(temp_stt_file):
+            print(f"VoiceIO PyAudio: STT recording saved to {temp_stt_file} conceptually.")
+            os.remove(temp_stt_file) # Cleanup test file
+            print(f"VoiceIO PyAudio: Cleaned up {temp_stt_file}.")
+        elif temp_stt_file is None:
+             print(f"VoiceIO PyAudio: STT recording failed conceptually.")
+        else: # temp_stt_file is a path but file does not exist
+             print(f"VoiceIO PyAudio: STT recording returned path {temp_stt_file} but file not found.")
+    else:
+        print("VoiceIO PyAudio: Skipping audio stream tests as Porcupine (needed for frame_length) or PyAudio did not initialize (or PyAudio not installed).")
+
+    # Ensure final cleanup if user tests interactively
+    voice_interface.delete_porcupine() # This will also call stop_audio_stream
+
+    print("\n--- End of VoiceIO __main__ tests (after adding PyAudio placeholders) ---")

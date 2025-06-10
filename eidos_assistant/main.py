@@ -1,6 +1,7 @@
 import sys
 import os
 import re # Added for command parsing
+import time # For sleep in conceptual loop
 
 # Add the 'core' directory to sys.path to allow importing LLMEngine
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -210,108 +211,114 @@ def run_assistant():
     # Ensure Porcupine is cleaned up if it was initialized, though run_always_listening_mode handles its own.
     # This is more of a general cleanup if VoiceIO was used elsewhere and main is exiting.
     finally:
-        if 'voice_interface' in locals() and hasattr(voice_interface, 'delete_porcupine'):
-            voice_interface.delete_porcupine() # Call if porcupine might have been used outside always_listening
+        if 'voice_interface' in locals() and hasattr(voice_interface, 'delete_porcupine') and voice_interface.porcupine:
+             voice_interface.delete_porcupine() # Ensure Porcupine resources are freed if it was initialized
         print("Eidos Assistant session ended.")
 
 
 def run_always_listening_mode(engine, voice_interface):
-    print("\n--- Pathos Always-Listening Mode (Conceptual) ---")
+    print("\n--- Pathos Always-Listening Mode ---")
+
     if not voice_interface.porcupine:
         print("Pathos: Porcupine Wake Word engine not initialized. Cannot start always-listening mode.")
         print("Pathos: Please check your PICOVOICE_ACCESS_KEY and Porcupine configurations in .env and README.")
         return
+    if not voice_interface.stt_model:
+        print("Pathos: Whisper STT model not initialized. Always-listening mode might not function fully for STT.")
+        # Depending on desired behavior, could return here or proceed with wake word only.
+        # For now, let's allow it to proceed, but STT will fail if called.
+
+    print(f"Pathos: Attempting to start audio stream for wake word detection...")
+    if not voice_interface.start_audio_stream(): # This now depends on Porcupine for frame_length
+        print("Pathos: Failed to start audio stream. Exiting always-listening mode.")
+        # voice_interface.delete_porcupine() # This is called in the finally block of this function
+        return
 
     print(f"Pathos: Listening for wake word(s): {voice_interface.porcupine_keywords_list}...")
-    print(f"Pathos: (This is a conceptual loop. Actual microphone input and continuous STT are not implemented here.)")
-    print("Pathos: To exit this conceptual mode, type 'quit' or 'exit' if a prompt appears, or use Ctrl+C.")
+    print("Pathos: Press Ctrl+C to exit always-listening mode.")
 
-    # Conceptual loop - in a real scenario, this would involve an audio stream.
-    # For this placeholder, we'll just simulate a few iterations or wait for user input to break.
     try:
-        # --- Placeholder for audio input library setup (e.g., PyAudio) ---
-        # Example (conceptual, PyAudio not installed or used here):
-        # import pyaudio
-        # pa = pyaudio.PyAudio()
-        # audio_stream = pa.open(
-        #     rate=voice_interface.porcupine.sample_rate, # Should be 16000 for Porcupine
-        #     channels=1,
-        #     format=pyaudio.paInt16, # Porcupine needs int16
-        #     input=True,
-        #     frames_per_buffer=voice_interface.porcupine_frame_length
-        # )
-        # print("Pathos: (Conceptual) Microphone stream opened.")
-        # --- End of placeholder ---
+        while True: # Main listening loop
+            audio_frame_pcm = voice_interface.read_audio_stream_chunk()
+            if not audio_frame_pcm:
+                time.sleep(0.05) # Avoid busy-looping on read errors, give system time
+                continue
 
-        active_listening_for_command = False
-        # In a real app, you'd have a way to buffer audio after wake word,
-        # or start a dedicated STT recording session.
+            keyword_index = voice_interface.process_audio_chunk_for_wakeword(audio_frame_pcm)
 
-        # Simulate a few checks or a way to break for this conceptual demo
-        for i in range(5): # Simulate a few cycles for demo purposes
-            print(f"\nPathos (Conceptual Listen Cycle {i+1}):")
+            if keyword_index >= 0:
+                if not voice_interface.porcupine_keywords_list or keyword_index >= len(voice_interface.porcupine_keywords_list):
+                    print("Pathos Error: Detected keyword index out of bounds for configured keywords.")
+                    continue # Or handle error more robustly
 
-            # --- Placeholder for reading audio frame ---
-            # conceptual_audio_frame = list(audio_stream.read(voice_interface.porcupine_frame_length))
-            # For this demo, we don't have real audio.
-            # We can't call process_audio_chunk_for_wakeword without a real frame.
-            # So, we'll simulate a wake word detection manually for one cycle.
-            # --- End of placeholder ---
+                detected_keyword = voice_interface.porcupine_keywords_list[keyword_index]
+                print(f"\nPathos: Wake word '{detected_keyword}' detected!")
 
-            if i == 2: # Simulate wake word detection on the 3rd conceptual cycle
-                if not voice_interface.porcupine_keywords_list: # Check if list is empty
-                    print("Pathos: (Conceptual) No keywords configured for detection.")
+                # Conceptual: Stop wake word stream to free up microphone for STT recording, then restart
+                # This is a simple approach; more advanced would use a single stream managed differently.
+                voice_interface.stop_audio_stream() # Stop stream before STT recording
+
+                project_root = os.path.dirname(os.path.abspath(__file__)) # eidos_assistant directory
+                temp_audio_file = os.path.join(project_root, "temp_user_command.wav")
+
+                print("Pathos: Listening for your command...")
+                if voice_interface.record_audio_for_stt(duration_seconds=4, temp_filename=temp_audio_file):
+                    print(f"Pathos: Processing command from {temp_audio_file}...")
+                    transcribed_text = voice_interface.speech_to_text(temp_audio_file)
+
+                    try:
+                        if os.path.exists(temp_audio_file):
+                            os.remove(temp_audio_file)
+                    except OSError as e:
+                        print(f"Pathos Warning: Could not delete temporary audio file {temp_audio_file}: {e}")
+
+                    if transcribed_text and not transcribed_text.startswith("[STT") and not transcribed_text.startswith("[Audio File"):
+                        print(f"Pathos (You said): \"{transcribed_text}\"")
+                        print("Pathos: Thinking...")
+                        llm_response = engine.get_response(transcribed_text)
+                        print(f"Pathos (Response): {llm_response}")
+
+                        if voice_interface.tts_client:
+                            is_error_response = any([
+                                llm_response.startswith("Pathos: Sorry, I tried but failed"),
+                                llm_response.startswith("Pathos: Could not get status"),
+                                llm_response.startswith("Pathos: Home Assistant tool call was missing"),
+                                llm_response.startswith("Pathos (error):") # General LLM errors
+                            ])
+                            if not is_error_response:
+                                tts_output_file = os.path.join(project_root, "pathos_response.mp3")
+                                if voice_interface.text_to_speech(llm_response, output_filename=tts_output_file):
+                                    print("Pathos: (Played response audio)")
+                                else:
+                                    print("Pathos: (Failed to play response audio)")
+                    elif transcribed_text:
+                         print(f"Pathos: {transcribed_text}") # Print STT error string
+                    else:
+                        print("Pathos: Could not understand command (STT failed or produced no text).")
                 else:
-                    detected_keyword_index = 0 # Simulate first configured keyword detected
-                    print(f"Pathos: Wake word '{voice_interface.porcupine_keywords_list[detected_keyword_index]}' detected conceptually!")
-                    active_listening_for_command = True
+                    print("Pathos: Failed to record command audio.")
 
-                    # --- Placeholder for starting STT after wake word ---
-                    print("Pathos: (Conceptual) Would now listen for command via STT...")
-                    # In a real app:
-                    # 1. Start buffering/recording audio for STT.
-                    # 2. After a pause or fixed duration, stop recording.
-                    # 3. Save to a temporary file.
-                    # temp_audio_file = "temp_stt_command.wav" # Needs to be in a writable location
-                    # transcribed_command = voice_interface.speech_to_text(temp_audio_file)
-                    # print(f"Pathos (Conceptual STT): Transcribed: '{transcribed_command}'")
-                    # if transcribed_command and not transcribed_command.startswith("[STT"):
-                    #     response = engine.get_response(transcribed_command)
-                    #     print(f"Pathos: {response}")
-                    #     if voice_interface.tts_client: # If TTS is available
-                    #         # This output_filename should ideally be unique or managed
-                    #         tts_output_file = "pathos_response.mp3"
-                    #         voice_interface.text_to_speech(response, output_filename=tts_output_file)
-                    #         print(f"Pathos: (Conceptual) Spoke response. Audio saved to {tts_output_file}.")
-                    # else:
-                    #     print("Pathos: (Conceptual STT) No command transcribed or STT error.")
-                    # if os.path.exists(temp_audio_file): os.remove(temp_audio_file) # Clean up
-                    # --- End of placeholder ---
+                print(f"\nPathos: Restarting audio stream for wake word detection...")
+                if not voice_interface.start_audio_stream():
+                    print("Pathos: Critical - Failed to restart audio stream. Exiting always-listening mode.")
+                    break
+                else:
+                    print(f"Pathos: Listening again for wake word(s): {voice_interface.porcupine_keywords_list}...")
 
-                    active_listening_for_command = False # Reset
-                    print("Pathos: (Conceptual) Returning to listening for wake word...")
-            else:
-                print("Pathos: (Conceptual) No wake word detected in this cycle.")
-
-            # Simulate a short delay as audio frames would come in over time
-            # import time
-            # time.sleep(0.1) # Not using time.sleep to avoid subtask issues.
-
-        print("\nPathos: (Conceptual) Always-listening demo cycles finished.")
+            # time.sleep(0.01) # Optional: small sleep if loop is too tight
 
     except KeyboardInterrupt:
         print("\nPathos: Always-listening mode interrupted by user.")
+    except Exception as e:
+        print(f"Pathos: An unexpected error occurred in always-listening mode: {e}")
     finally:
-        # --- Placeholder for closing audio stream ---
-        # if 'audio_stream' in locals() and audio_stream.is_active():
-        #    audio_stream.stop_stream()
-        #    audio_stream.close()
-        # if 'pa' in locals():
-        #    pa.terminate()
-        # print("Pathos: (Conceptual) Microphone stream closed.")
-        # --- End of placeholder ---
-        if voice_interface.porcupine: # Ensure delete is called if porcupine was init'd
-            voice_interface.delete_porcupine()
+        print("Pathos: Stopping audio stream and cleaning up Porcupine for this mode...")
+        voice_interface.stop_audio_stream() # Ensure stream is stopped
+        # Porcupine instance itself is managed by the VoiceIO object passed in;
+        # its lifecycle is tied to VoiceIO. delete_porcupine() is called when main.py exits.
+        # However, if this mode specifically initialized it or has unique control, cleanup here.
+        # The current VoiceIO.delete_porcupine() also calls stop_audio_stream.
+        # No explicit call to voice_interface.delete_porcupine() here, let main.py's finally handle it.
         print("Pathos: Exited always-listening mode.")
 
 if __name__ == '__main__':

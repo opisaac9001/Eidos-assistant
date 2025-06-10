@@ -6,12 +6,19 @@ import re # Added for command parsing
 # This assumes main.py is in 'eidos_assistant/' and LLMEngine is in 'eidos_assistant/core/'
 current_dir = os.path.dirname(os.path.abspath(__file__))
 core_dir = os.path.join(current_dir, 'core')
-sys.path.append(core_dir)
+if core_dir not in sys.path:
+    sys.path.append(core_dir)
+
+# Add 'interface' directory to sys.path
+interface_dir = os.path.join(current_dir, 'interface')
+if interface_dir not in sys.path:
+    sys.path.append(interface_dir)
 
 try:
     from llm_engine import LLMEngine
-except ImportError:
-    print("Error: Could not import LLMEngine. Ensure 'llm_engine.py' is in the 'core' directory and core_dir is in sys.path.")
+    from voice_io import VoiceIO # Added VoiceIO import
+except ImportError as e:
+    print(f"Error: Could not import required modules. Check paths. Details: {e}")
     sys.exit(1)
 
 def run_assistant():
@@ -19,10 +26,37 @@ def run_assistant():
 
     # The LLMEngine expects persona_config.yaml to be in the same directory as llm_engine.py (core/)
     # It resolves this path internally, so we don't need to pass a modified path here.
-    engine = LLMEngine(persona_config_path="persona_config.yaml")
+    engine = LLMEngine() # Uses defaults, including .env loading attempt
 
-    if not engine.persona:
-        print("Error: LLM Engine failed to load persona. Exiting.")
+    if not engine.persona: # Persona loading is separate from client init for LLM
+        print("Warning: LLM Engine did not load a persona. Using defaults.")
+        # The engine will use its default system prompt if persona fails.
+
+    print("Initializing Voice Interface...")
+    voice_interface = VoiceIO() # Uses defaults, including .env loading attempt for Kokoro
+    if not voice_interface.tts_client: # Check if client initialized successfully
+        print("Warning: VoiceIO TTS client failed to initialize. /say command may not work as expected.")
+
+    if not engine.client: # Check if LLM client initialized
+        print("Warning: LLM Engine client failed to initialize. LLM interactions may not work.")
+
+    # Print assistant startup message regardless of client statuses, as basic commands might still work.
+    print(f"Eidos Assistant ({engine.get_persona_attribute('identity.name') or 'DefaultName'}, {engine.get_persona_attribute('tone') or 'default tone'}) started.")
+    if engine.client :
+        print(f"LLM Engine connected to: {engine.api_base_url}")
+    else:
+        print(f"LLM Engine NOT connected to: {engine.api_base_url} (client init failed or not attempted)")
+
+    if voice_interface.tts_client:
+        print(f"VoiceIO TTS connected to: {voice_interface.kokoro_base_url}")
+    else:
+        print(f"VoiceIO TTS NOT connected (client init failed or not attempted)")
+
+    print("Ensure your OpenAI API-compatible LLM server (and Kokoro TTS server for /say) is running if needed.")
+    print("Type 'quit' or 'exit' to end the session.")
+    print("-" * 30)
+
+    while True:
         return
 
     print(f"Eidos Assistant ({engine.get_persona_attribute('identity.name')}, {engine.get_persona_attribute('tone')}) started.")
@@ -99,12 +133,31 @@ def run_assistant():
                     else:
                         print("Eidos: Usage: /forget <category>.<key> (e.g., /forget user_profile.name)")
 
-                elif command == "/system_prompt": # Added for debugging
+                elif command == "/system_prompt":
                     print(f"Eidos (Debug): Current system prompt is:\n{engine.system_prompt}")
 
+                elif command == "/say":
+                    text_to_speak = args_str.strip()
+                    if not text_to_speak:
+                        print("Eidos: Usage: /say <text you want me to speak>")
+                    else:
+                        print(f"Eidos: Attempting to generate speech for: '{text_to_speak[:50]}...'")
+                        # Define a default output filename, make it unique or overwrite
+                        # This file will be created in the eidos_assistant/ directory when main.py is run from there.
+                        output_filename = "eidos_tts_output.mp3"
+                        if voice_interface.text_to_speech(text_to_speak, output_filename=output_filename):
+                            print(f"Eidos: Speech saved to {output_filename}. You can play it with an audio player.")
+                        else:
+                            print(f"Eidos: Sorry, I couldn't generate speech. Check logs or TTS server status.")
+
                 else:
-                    print(f"Eidos: Unknown command '{command}'. Try /remember, /recall, or /forget.")
+                    print(f"Eidos: Unknown command '{command}'. Try /remember, /recall, /forget, /say, or /system_prompt.")
                 continue # Skip sending command to LLM
+
+            # Only try to get LLM response if client is available
+            if not engine.client:
+                print("Eidos (Error): LLM client not available. Cannot process general queries.")
+                continue
 
             assistant_response = engine.get_response(user_input)
             print(f"Eidos: {assistant_response}")

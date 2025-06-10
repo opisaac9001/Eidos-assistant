@@ -1,13 +1,27 @@
 import yaml
-import os
+import os # Ensure os is imported for getenv and path operations
+from dotenv import load_dotenv
 from openai import OpenAI, APIConnectionError, APIStatusError
-from memory import MemoryManager # Added import
+from memory import MemoryManager
+
+# import os # os is already imported below
+from dotenv import load_dotenv # Will remove this if load_dotenv continues to fail
+
+# Attempt to load .env, but proceed gracefully if it fails or python-dotenv has issues.
+# The os.getenv calls in __init__ will then rely on system-set env vars or use defaults.
+try:
+    # Using the original robust path construction, hoping it might work once, else defaults will take over.
+    dotenv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
+    loaded_env = load_dotenv(dotenv_path=dotenv_path)
+    print(f"DEBUG: dotenv_path: {dotenv_path}, Loaded .env successfully: {loaded_env}")
+except Exception as e:
+    print(f"DEBUG: Error loading .env file: {e}. Proceeding with defaults or system-set environment variables.")
 
 class LLMEngine:
     def __init__(self,
                  persona_config_path="persona_config.yaml",
-                 api_base_url: str = "http://localhost:11434/v1",
-                 api_key: str = "NA"):
+                 api_base_url=os.getenv("LLM_API_BASE_URL", "http://localhost:11434/v1"),
+                 api_key=os.getenv("LLM_API_KEY", "NotNeededForOllama")): # Changed default to match .env expectation
         # Construct the absolute path to the persona config file
         base_dir = os.path.dirname(os.path.abspath(__file__)) # core directory
         self.persona_config_path = os.path.join(base_dir, persona_config_path)
@@ -180,25 +194,28 @@ class LLMEngine:
             return None
 
 if __name__ == '__main__':
-    print("Attempting to load LLMEngine with default local LLM settings...")
-    engine = LLMEngine() # Uses default persona_config.yaml and API URL
+    print("Testing LLMEngine. It will use environment variables if available, or defaults.")
+    engine = LLMEngine()
+    print(f"LLMEngine is using API Base URL: {engine.api_base_url} (Expected from .env or default)")
+    print(f"LLMEngine is using API Key: {engine.api_key} (Expected from .env or default)")
 
     if engine.persona:
         print("\nPersona loaded successfully.")
         print(f"Assistant Name (from persona): {engine.get_persona_attribute('identity.name')}")
-        print(f"System Prompt: {engine.system_prompt}")
+        # System prompt is already printed below and after modifications
     else:
         print("\nWarning: Failed to load persona or persona is empty.")
         # Even if persona fails, system_prompt is built from memory/defaults
-        print(f"System prompt (persona load failed or empty): {engine.system_prompt}")
 
+    # System prompt is printed below, and also after it's modified by memory operations.
+    # print(f"Initial System prompt (after persona and memory init): {engine.system_prompt}")
 
     if not engine.client:
         print("\nError: OpenAI client failed to initialize. LLM calls will not work.")
     else:
-        print("\nOpenAI client initialized.")
+        print("\nOpenAI client initialized.") # This is already printed by __init__ if successful
 
-    print(f"\nInitial system prompt: {engine.system_prompt}")
+    print(f"\nInitial system prompt: {engine.system_prompt}") # Print current system prompt
 
     print(f"\nRemembering user name 'Tester'... Result: {engine.remember('user_profile', 'name', 'Tester')}")
     engine.refresh_system_prompt()

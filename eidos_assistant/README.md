@@ -7,17 +7,49 @@ Eidos Assistant is a conversational AI assistant designed to be extensible and r
 *   Python (version 3.8+ recommended)
 *   Pip (Python package installer)
 *   Access to a local Large Language Model (LLM) server that is compatible with the OpenAI API.
+*   For Text-to-Speech (TTS) functionality with the `/say` command, a running instance of a Kokoro-FastAPI compatible server is needed.
 
 ## Installation
 
 1.  Clone this repository.
 2.  Install required Python packages:
     ```bash
-    # Placeholder for requirements.txt installation command
     # pip install -r requirements.txt
     # (requirements.txt will be added in a future step)
-    # For now, necessary libraries like PyYAML and OpenAI will be installed by specific subtasks.
+    # For now, manually ensure the following are installed if not handled by subtasks:
+    # pip install PyYAML openai python-dotenv
     ```
+
+## Configuration via .env File
+
+Eidos Assistant uses a `.env` file in the project root (`eidos_assistant/`) to manage configurations for external services. Create this file if it doesn't exist.
+
+Example `.env` content:
+
+```env
+# .env - Environment variables for Eidos Assistant
+
+# LLM Configuration (OpenAI compatible API)
+LLM_API_BASE_URL="http://localhost:11434/v1"
+LLM_API_KEY="NotNeededForOllama" # Or your actual API key if required
+
+# Kokoro TTS Server Configuration (OpenAI compatible API via remsky/Kokoro-FastAPI)
+KOKORO_TTS_BASE_URL="http://localhost:8880/v1"
+KOKORO_TTS_API_KEY="not-needed" # Or your actual API key if required
+KOKORO_TTS_VOICE="af_sky"
+# Example voices: "af_sky+af_bella" (blended), "af_bella(2)+af_heart(1)" (weighted)
+```
+
+**Key Environment Variables:**
+
+*   `LLM_API_BASE_URL`: The base URL for your OpenAI API compatible LLM server.
+*   `LLM_API_KEY`: The API key for your LLM server (if required).
+*   `KOKORO_TTS_BASE_URL`: The base URL for your Kokoro-FastAPI TTS server.
+*   `KOKORO_TTS_API_KEY`: The API key for your TTS server (if required, typically "not-needed" for local Kokoro-FastAPI).
+*   `KOKORO_TTS_VOICE`: The default voice to be used for TTS. Consult your Kokoro-FastAPI documentation for available voices.
+
+The application will attempt to load these variables. If `.env` is not found or a variable is missing, fallback default values will be used (which also point to common local server addresses).
+Make sure your `.env` file is added to your `.gitignore` to avoid committing sensitive information.
 
 ## Running the Assistant
 
@@ -27,12 +59,14 @@ Currently, the assistant runs via a command-line interface:
 python eidos_assistant/main.py
 ```
 
-**Important for Conversational AI:**
+**Important for Conversational AI & TTS:**
 
 To enable full conversational capabilities, you need a local LLM server running that is compatible with the OpenAI API (e.g., Ollama, LM Studio, VLLM).
-The assistant is configured by default to attempt to connect to an LLM at `http://localhost:11434/v1` (a common endpoint for Ollama). If your LLM server is running on a different address or port, you will need to configure this in the `LLMEngine` (details to be updated as configuration options are added).
+For the `/say` command to work, a Kokoro-FastAPI compatible TTS server must be running and accessible at the configured `KOKORO_TTS_BASE_URL`.
 
-Ensure your LLM server is running *before* starting the Eidos Assistant. If the assistant cannot connect to the LLM, it will indicate an error.
+The assistant is configured by default to attempt to connect to an LLM at `http://localhost:11434/v1` and TTS at `http://localhost:8880/v1`. If your servers are running on different addresses or ports, update your `.env` file or modify the default values in the code.
+
+Ensure your servers are running *before* starting the Eidos Assistant. If the assistant cannot connect, it will indicate an error or relevant commands may fail.
 
 ## Project Structure
 
@@ -45,9 +79,9 @@ Ensure your LLM server is running *before* starting the Eidos Assistant. If the 
 *   `data/memory.json`: Stores data like user preferences, facts, and profile information.
 *   `main.py`: Main application entry point.
 
-## Using Memory Commands
+## Slash Commands
 
-You can interact with the assistant's long-term memory using special slash commands:
+You can interact with the Eidos Assistant using special slash commands:
 
 *   `/remember <category>.<key>=<value>`: Stores a piece of information.
     *   Example: `/remember user_profile.name=Alice`
@@ -63,3 +97,6 @@ You can interact with the assistant's long-term memory using special slash comma
     *   If this affects the system prompt (e.g. forgetting `user_profile.name`), the prompt will be updated.
 
 *   `/system_prompt`: (Debug command) Prints the current system prompt that the LLM engine is using.
+
+*   `/say <text to speak>`: Generates speech from the provided text using the configured TTS server and saves it to `eidos_tts_output.mp3` in the project root.
+    *   Example: `/say Hello, I am Eidos.`

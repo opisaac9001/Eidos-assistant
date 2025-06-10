@@ -1,0 +1,6 @@
+.env
+*.pyc
+__pycache__/
+data/test_memory.json
+# Add other files/directories to ignore as needed, e.g., eidos_tts_output.mp3
+eidos_tts_output.mp3

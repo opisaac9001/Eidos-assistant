@@ -5,7 +5,8 @@ from openai import OpenAI, APIConnectionError, APIStatusError
 from memory import MemoryManager
 
 # import os # os is already imported below
-from dotenv import load_dotenv # Will remove this if load_dotenv continues to fail
+from dotenv import load_dotenv
+import sys # Added for sys.path manipulation
 
 # Attempt to load .env, but proceed gracefully if it fails or python-dotenv has issues.
 # The os.getenv calls in __init__ will then rely on system-set env vars or use defaults.
@@ -13,9 +14,22 @@ try:
     # Using the original robust path construction, hoping it might work once, else defaults will take over.
     dotenv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
     loaded_env = load_dotenv(dotenv_path=dotenv_path)
-    print(f"DEBUG: dotenv_path: {dotenv_path}, Loaded .env successfully: {loaded_env}")
+    print(f"DEBUG: llm_engine.py - dotenv_path: {dotenv_path}, Loaded .env successfully: {loaded_env}")
 except Exception as e:
-    print(f"DEBUG: Error loading .env file: {e}. Proceeding with defaults or system-set environment variables.")
+    print(f"DEBUG: llm_engine.py - Error loading .env file: {e}. Proceeding with defaults or system-set environment variables.")
+
+# Dynamically add skills directory to sys.path for importing HomeAssistantSkill
+# This ensures that even if LLMEngine is imported from elsewhere, it can find its skills.
+try:
+    current_script_dir = os.path.dirname(os.path.abspath(__file__)) # core directory
+    project_root_dir = os.path.dirname(current_script_dir) # eidos_assistant directory
+    skills_dir_path = os.path.join(project_root_dir, 'skills')
+    if skills_dir_path not in sys.path:
+        sys.path.insert(0, skills_dir_path) # Insert at beginning for priority
+    from home_assistant_skill import HomeAssistantSkill
+except ImportError as e:
+    print(f"LLMEngine Critical Error: Could not import HomeAssistantSkill. Ensure skills module is in the correct path: {e}")
+    HomeAssistantSkill = None # Define as None so type hints/checks for ha_skill don't break if import fails
 
 class LLMEngine:
     def __init__(self,
@@ -50,6 +64,28 @@ class LLMEngine:
             self.system_prompt = self._construct_system_prompt()
         else: # Ensure system prompt is constructed even if persona fails but memory might be useful
              self.system_prompt = self._construct_system_prompt()
+
+        # Initialize HomeAssistantSkill
+        print("LLMEngine: Initializing HomeAssistantSkill...")
+        self.ha_skill = None # Initialize to None
+        if HomeAssistantSkill: # Check if import was successful
+            try:
+                self.ha_skill = HomeAssistantSkill()
+                if self.ha_skill.ha_token and self.ha_skill.ha_token != "YOUR_LONG_LIVED_ACCESS_TOKEN_HERE":
+                    # Defer check_api_status to when a command is actually run, or user can do it.
+                    # For now, just confirm it loaded.
+                    # if self.ha_skill.check_api_status(): # This makes init slower
+                    # print("LLMEngine: HomeAssistantSkill initialized and API status OK.")
+                    print("LLMEngine: HomeAssistantSkill initialized. Call check_api_status() on HA skill for full check.")
+                    # else:
+                    # print("LLMEngine Warning: HomeAssistantSkill initialized, but API status check failed. HA features may not work.")
+                else:
+                    print("LLMEngine Warning: HomeAssistantSkill initialized, but HA token not configured. HA features disabled.")
+            except Exception as e:
+                print(f"LLMEngine Error: Failed to initialize HomeAssistantSkill instance: {e}. HA features will be unavailable.")
+                self.ha_skill = None # Ensure it's None on error
+        else:
+            print("LLMEngine Error: HomeAssistantSkill class not available due to import failure. HA features disabled.")
 
 
     def _construct_system_prompt(self) -> str:
@@ -249,4 +285,12 @@ if __name__ == '__main__':
     print("(like Ollama with a model such as 'llama2' or 'gemma:2b' pulled and served) is running and accessible ")
     print(f"at the configured API base URL ({engine.api_base_url}).")
     print("The data/memory.json file will reflect the last state of memory operations if they succeeded.")
+
+    print("\n--- LLMEngine Home Assistant Skill Test ---")
+    if hasattr(engine, 'ha_skill') and engine.ha_skill:
+        print(f"LLMEngine has HomeAssistantSkill initialized. API available (checked by HA_Skill init or next call): {engine.ha_skill.api_available}")
+        # Further tests would require a running HA instance.
+    else:
+        print("LLMEngine: HomeAssistantSkill not available or failed to initialize.")
+
     print("\nLLMEngine direct execution test complete.")

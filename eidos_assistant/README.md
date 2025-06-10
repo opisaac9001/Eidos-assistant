@@ -1,6 +1,6 @@
-# Eidos Assistant
+# Pathos Assistant
 
-Eidos Assistant is a conversational AI assistant designed to be extensible and run locally. This project is being developed iteratively.
+Pathos Assistant is a conversational AI assistant designed to be extensible and run locally, now with capabilities to interact with Home Assistant. This project is being developed iteratively.
 
 ## Prerequisites
 
@@ -14,6 +14,8 @@ Eidos Assistant is a conversational AI assistant designed to be extensible and r
 *   **For Wake Word Detection (e.g., `/always_listen` command):**
     *   The `pvporcupine` Python library. (`pip install pvporcupine`)
     *   A Picovoice AccessKey (see Configuration section).
+*   **For Home Assistant Integration (planned feature):**
+    *   The `requests` Python library. (`pip install requests`)
 
 ## Installation
 
@@ -23,7 +25,7 @@ Eidos Assistant is a conversational AI assistant designed to be extensible and r
     # pip install -r requirements.txt
     # (requirements.txt will be added in a future step)
     # For now, manually ensure the following are installed if not handled by subtasks:
-    # pip install PyYAML openai python-dotenv openai-whisper pvporcupine
+    # pip install PyYAML openai python-dotenv openai-whisper pvporcupine requests
     ```
 
 ## Configuration via .env File
@@ -51,6 +53,10 @@ PORCUPINE_BUILTIN_KEYWORDS="picovoice"
 PORCUPINE_KEYWORD_PATHS=""
 PORCUPINE_MODEL_PATH=""
 PORCUPINE_SENSITIVITIES=""
+
+# Home Assistant Configuration
+HOME_ASSISTANT_URL="http://homeassistant.local:8123"
+HOME_ASSISTANT_TOKEN="YOUR_LONG_LIVED_ACCESS_TOKEN_HERE"
 ```
 
 **Key Environment Variables:**
@@ -65,6 +71,8 @@ PORCUPINE_SENSITIVITIES=""
 *   `PORCUPINE_KEYWORD_PATHS`: Optional. A comma-separated list of absolute paths to custom `.ppn` wake word model files. If you want to use "Pathos" as a wake word, you'll need to create a model for it on the Picovoice Console and provide the path here.
 *   `PORCUPINE_MODEL_PATH`: Optional. Path to a Porcupine model file (`.pv`) for non-English language support. Defaults to English.
 *   `PORCUPINE_SENSITIVITIES`: Optional. A comma-separated list of sensitivity values (0.0 to 1.0) for each keyword. Must match the number and order of combined built-in and custom keywords.
+*   `HOME_ASSISTANT_URL`: The full URL of your Home Assistant instance (e.g., `http://localhost:8123` or `http://your_ha_ip_address:8123`).
+*   `HOME_ASSISTANT_TOKEN`: A Long-Lived Access Token generated from your Home Assistant user profile.
 
 
 The application will attempt to load these variables. If `.env` is not found or a variable is missing, fallback default values will be used (which also point to common local server addresses).
@@ -77,6 +85,16 @@ Make sure your `.env` file is added to your `.gitignore` to avoid committing sen
 4.  To use custom wake words (e.g., "Pathos"), you need to train a model on the Picovoice Console. This will generate a `.ppn` file. Provide the full path to this file (or multiple, comma-separated) in `PORCUPINE_KEYWORD_PATHS`.
 5.  If using only built-in keywords, `PORCUPINE_KEYWORD_PATHS` can be left empty. If using only custom keywords, `PORCUPINE_BUILTIN_KEYWORDS` can be left empty. Both can be used together.
 
+**Setting up Home Assistant Integration:**
+1.  Ensure your Home Assistant instance is running and accessible from where you run Pathos.
+2.  Set `HOME_ASSISTANT_URL` in your `.env` file to the correct URL for your Home Assistant instance.
+3.  Generate a Long-Lived Access Token in Home Assistant:
+    *   Go to your Home Assistant profile (click your user icon in the bottom left).
+    *   Scroll down to the "Long-Lived Access Tokens" section.
+    *   Click "Create Token", give it a name (e.g., "Pathos_Assistant"), and copy the generated token.
+    *   **Important:** You will only see the token once. Store it securely.
+4.  Set this token as `HOME_ASSISTANT_TOKEN` in your `.env` file.
+
 
 ## Running the Assistant
 
@@ -87,7 +105,6 @@ python eidos_assistant/main.py
 ```
 
 **Important for Conversational AI & TTS:**
-
 To enable full conversational capabilities, you need a local LLM server running that is compatible with the OpenAI API (e.g., Ollama, LM Studio, VLLM).
 For the `/say` command to work, a Kokoro-FastAPI compatible TTS server must be running and accessible at the configured `KOKORO_TTS_BASE_URL`.
 
@@ -96,7 +113,6 @@ The assistant is configured by default to attempt to connect to an LLM at `http:
 Ensure your servers are running *before* starting the Eidos Assistant. If the assistant cannot connect, it will indicate an error or relevant commands may fail.
 
 **Important Notes on Advanced Voice Features (STT & Wake Word):**
-
 Features like Speech-to-Text (STT) via the `/listen` command (using Whisper) and the planned Wake Word detection (using Porcupine, e.g., via `/always_listen`) have been implemented or designed in the codebase but **could not be fully tested by the AI assistant developer due to limitations in the development sandbox environment.** These limitations include issues installing large dependencies (like `torch` for Whisper) or accessing hardware like microphones.
 
 Users wishing to use these advanced voice features must:
@@ -115,6 +131,7 @@ The successful operation of these features is contingent upon the user's local s
 *   `core/memory.py`: Manages the assistant's long-term memory.
 *   `interface/`: User interface components (e.g., voice I/O).
 *   `skills/`: Future directory for assistant skills/plugins.
+*   `skills/home_assistant_skill.py`: Contains the `HomeAssistantSkill` class for interacting with a Home Assistant instance.
 *   `ingestion/`: Future directory for data ingestion pipelines.
 *   `data/`: Data storage (e.g., databases, logs).
 *   `data/memory.json`: Stores data like user preferences, facts, and profile information.
@@ -148,3 +165,8 @@ You can interact with the Eidos Assistant using special slash commands:
 
 *   `/always_listen`: Activates a conceptual "always-listening" mode.
     *   **Note:** This command in its current state initiates a placeholder loop. It demonstrates where wake word detection using Porcupine would occur if live microphone audio processing were fully implemented. It does not currently process live audio. To make this functional, you would need to integrate an audio input library (e.g., PyAudio, sounddevice) to continuously feed audio data to the Porcupine engine within `VoiceIO`.
+
+*   `/ha_status <entity_id>`: Retrieves and displays the current state and attributes of the specified Home Assistant entity.
+    *   Example: `/ha_status light.living_room`
+*   `/ha_toggle <entity_id>`: Sends a 'toggle' command to the specified Home Assistant entity (e.g., to toggle a light or switch).
+    *   Example: `/ha_toggle switch.smart_plug`

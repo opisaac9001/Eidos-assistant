@@ -153,8 +153,40 @@ def run_assistant():
                         else:
                             print(f"Eidos STT: Transcription failed or produced no text. Ensure the audio file is valid and STT model is working.")
 
+                elif command == "/always_listen": # This was added in the previous step, ensure it's here
+                    print("Eidos: Entering conceptual always-listening mode...")
+                    run_always_listening_mode(engine, voice_interface)
+                    print("Eidos: Exited conceptual always-listening mode. Returning to standard input.")
+
+                elif command == "/ha_status":
+                    entity_id = args_str.strip()
+                    if not entity_id:
+                        print("Pathos: Usage: /ha_status <entity_id>")
+                    elif not engine.ha_skill:
+                        print("Pathos: Home Assistant skill is not available or not configured.")
+                    else:
+                        print(f"Pathos: Getting status for HA entity: '{entity_id}'...")
+                        state = engine.ha_skill.get_entity_state(entity_id)
+                        if state:
+                            print(f"Pathos HA Status: {entity_id} -> State: {state.get('state')}, Attributes: {state.get('attributes')}")
+                        else:
+                            print(f"Pathos: Could not retrieve status for '{entity_id}'. Check entity ID and HA connection.")
+
+                elif command == "/ha_toggle":
+                    entity_id = args_str.strip()
+                    if not entity_id:
+                        print("Pathos: Usage: /ha_toggle <entity_id>")
+                    elif not engine.ha_skill:
+                        print("Pathos: Home Assistant skill is not available or not configured.")
+                    else:
+                        print(f"Pathos: Attempting to toggle HA entity: '{entity_id}'...")
+                        # Using "homeassistant" domain for generic toggle
+                        if engine.ha_skill.call_service("homeassistant", "toggle", {"entity_id": entity_id}):
+                            print(f"Pathos: Toggle command sent for '{entity_id}'. Check Home Assistant for state change.")
+                        else:
+                            print(f"Pathos: Failed to send toggle command for '{entity_id}'.")
                 else:
-                    print(f"Eidos: Unknown command '{command}'. Try /remember, /recall, /forget, /say, /system_prompt, or /listen.")
+                    print(f"Eidos: Unknown command '{command}'. Try /remember, /recall, /forget, /say, /system_prompt, /listen, /always_listen, /ha_status, or /ha_toggle.")
                 continue # Skip sending command to LLM
 
             # Only try to get LLM response if client is available

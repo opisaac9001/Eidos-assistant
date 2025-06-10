@@ -25,6 +25,10 @@ def run_assistant():
         return
 
     print(f"Eidos Assistant ({engine.get_persona_attribute('identity.name')}, {engine.get_persona_attribute('tone')}) started.")
+    # Access the api_base_url from the engine instance
+    print(f"Attempting to connect to LLM at: {engine.api_base_url}")
+    print("If this is not your LLM endpoint, you may need to configure it in future versions or directly in code.")
+    print("Ensure your OpenAI API-compatible LLM server is running.")
     print("Type 'quit' or 'exit' to end the session.")
     print("-" * 30)
 

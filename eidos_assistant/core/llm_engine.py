@@ -1,15 +1,30 @@
 import yaml
 import os
+from openai import OpenAI, APIConnectionError, APIStatusError
 
 class LLMEngine:
-    def __init__(self, persona_config_path="persona_config.yaml"):
+    def __init__(self,
+                 persona_config_path="persona_config.yaml",
+                 api_base_url: str = "http://localhost:11434/v1",
+                 api_key: str = "NA"):
         # Construct the absolute path to the persona config file
-        # Assuming persona_config.yaml is in the same directory as this script (core/)
         base_dir = os.path.dirname(os.path.abspath(__file__))
         self.persona_config_path = os.path.join(base_dir, persona_config_path)
         self.persona = None
         self.system_prompt = "You are a helpful AI assistant." # Default prompt
-        self.load_persona()
+
+        self.api_base_url = api_base_url
+        self.api_key = api_key
+        self.client = None
+
+        try:
+            self.client = OpenAI(base_url=self.api_base_url, api_key=self.api_key)
+            print(f"LLMEngine initialized with API base URL: {self.api_base_url}")
+        except Exception as e:
+            print(f"Error initializing OpenAI client: {e}")
+            # self.client remains None
+
+        self.load_persona() # Load persona after client init attempt
         if self.persona: # If persona loaded successfully
             self.system_prompt = self._construct_system_prompt()
 
@@ -44,15 +59,39 @@ class LLMEngine:
         """
         Generates a response to user input.
         Currently a placeholder that shows persona attributes and system prompt.
+        Now attempts to connect to an LLM.
         """
-        assistant_name = self.get_persona_attribute('identity.name') or "Assistant"
-        assistant_tone = self.get_persona_attribute('tone') or "neutral"
+        if not self.client:
+            return "Eidos (error): OpenAI client not initialized. Cannot connect to LLM."
 
-        # In a real scenario, self.system_prompt and user_input would go to an LLM.
-        # For now, we simulate a response:
-        response = f"{assistant_name} ({assistant_tone}): You said '{user_input}'. "\
-                   f"I'm still learning how to respond fully! (System prompt: '{self.system_prompt}')"
-        return response
+        assistant_name = self.get_persona_attribute('identity.name') or "Eidos" # Default to Eidos
+        # assistant_tone = self.get_persona_attribute('tone') or "neutral" # Tone is part of system prompt
+
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": user_input}
+        ]
+
+        try:
+            completion = self.client.chat.completions.create(
+                model="local-model", # Model name is often ignored by local servers but required by API
+                messages=messages,
+                temperature=0.7,
+            )
+            response_content = completion.choices[0].message.content
+            return response_content.strip()
+        except APIConnectionError as e:
+            error_msg = f"Error connecting to LLM API at {self.api_base_url}: {e}"
+            print(error_msg)
+            return f"{assistant_name} (error): {error_msg}"
+        except APIStatusError as e:
+            error_msg = f"LLM API returned an error: Status {e.status_code}, Response: {e.response}"
+            print(error_msg)
+            return f"{assistant_name} (error): {error_msg}"
+        except Exception as e:
+            error_msg = f"An unexpected error occurred during LLM call: {e}"
+            print(error_msg)
+            return f"{assistant_name} (error): {error_msg}"
 
     def load_persona(self):
         """Loads the persona configuration from the YAML file."""
@@ -100,32 +139,33 @@ class LLMEngine:
             return None
 
 if __name__ == '__main__':
-    # Example usage (assuming persona_config.yaml is in the same directory)
-    print("Attempting to load LLMEngine...")
-    # For this example to run directly, persona_config.yaml needs to be in the same dir as llm_engine.py
-    # In a real application, paths might be managed differently.
-    engine = LLMEngine(persona_config_path="persona_config.yaml")
+    print("Attempting to load LLMEngine with default local LLM settings...")
+    engine = LLMEngine() # Uses default persona_config.yaml and API URL
 
     if engine.persona:
-        print("\nPersona loaded successfully:")
-        # print(yaml.dump(engine.persona, indent=2)) # Using yaml.dump for pretty print
-
-        print(f"\nAssistant Name: {engine.get_persona_attribute('identity.name')}")
-        print(f"Assistant Tone: {engine.get_persona_attribute('tone')}")
-        print(f"Greeting example: {engine.get_persona_attribute('signature_phrases.greeting.0')}")
-        print(f"\nSystem Prompt:\n{engine.system_prompt}")
+        print("\nPersona loaded successfully.")
+        print(f"Assistant Name (from persona): {engine.get_persona_attribute('identity.name')}")
+        print(f"System Prompt: {engine.system_prompt}")
     else:
-        print("\nFailed to load persona or persona is empty.")
-        print(f"\nDefault System Prompt:\n{engine.system_prompt}")
+        print("\nWarning: Failed to load persona or persona is empty.")
+        print(f"Using default system prompt: {engine.system_prompt}")
 
+    if not engine.client:
+        print("\nError: OpenAI client failed to initialize. LLM calls will not work.")
+    else:
+        print("\nOpenAI client initialized.")
 
-    print("\nTesting non-existent attribute:")
-    print(f"Non-existent: {engine.get_persona_attribute('identity.age')}")
-
-    print("\nTesting get_response method:")
-    user_query = "Hello there!"
-    simulated_response = engine.get_response(user_query)
+    print("\nAttempting to get a response from LLM via get_response():")
+    user_query = "Tell me a fun fact about Python programming."
     print(f"User Query: \"{user_query}\"")
-    print(f"Simulated Response: \"{simulated_response}\"")
 
-    print("\nLLMEngine loading test complete.")
+    response = engine.get_response(user_query)
+    print(f"\nLLM Response (or error):")
+    print(response)
+
+    print("\n---")
+    print("Note: If the response above is an error (e.g., connection error), ensure your local LLM server ")
+    print("(like Ollama with a model such as 'llama2' or 'gemma:2b' pulled and served) is running and accessible ")
+    print(f"at the configured API base URL ({engine.api_base_url}).")
+    print("If the client failed to initialize, check OpenAI library installation and API key/URL if modified.")
+    print("\nLLMEngine direct execution test complete.")

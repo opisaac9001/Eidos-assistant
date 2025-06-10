@@ -1,5 +1,6 @@
 import sys
 import os
+import re # Added for command parsing
 
 # Add the 'core' directory to sys.path to allow importing LLMEngine
 # This assumes main.py is in 'eidos_assistant/' and LLMEngine is in 'eidos_assistant/core/'
@@ -41,6 +42,69 @@ def run_assistant():
 
             if not user_input.strip(): # Handle empty input
                 continue
+
+            if user_input.startswith("/"):
+                command_parts = user_input.split(" ", 1)
+                command = command_parts[0]
+                args_str = command_parts[1] if len(command_parts) > 1 else ""
+
+                if command == "/remember":
+                    match = re.match(r"(\w+)\.(\w+)=(.+)", args_str)
+                    if match:
+                        category, key, value = match.groups()
+                        # Basic type conversion for common types, could be expanded
+                        if value.lower() == "true": value = True
+                        elif value.lower() == "false": value = False
+                        elif value.isdigit(): value = int(value)
+                        elif value.replace('.', '', 1).isdigit(): # crude float check
+                            try: value = float(value)
+                            except ValueError: pass # Keep as string if not a simple float
+
+                        if engine.remember(category, key, value):
+                            print(f"Eidos: Okay, I've remembered that {category}.{key} is {value}.")
+                            # Refresh system prompt if a known prompt-affecting key is changed
+                            if (category == "user_profile" and key == "name") or \
+                               (category == "user_preferences" and key == "theme"):
+                                engine.refresh_system_prompt()
+                                print(f"Eidos: My system prompt has been updated.")
+                        else:
+                            print(f"Eidos: I couldn't remember that. There might have been an issue.")
+                    else:
+                        print("Eidos: Usage: /remember <category>.<key>=<value> (e.g., /remember user_profile.name=Alice)")
+
+                elif command == "/recall":
+                    match = re.match(r"(\w+)\.(\w+)", args_str)
+                    if match:
+                        category, key = match.groups()
+                        value = engine.recall(category, key)
+                        if value is not None:
+                            print(f"Eidos: I recall {category}.{key} is: {value}")
+                        else:
+                            print(f"Eidos: I don't have anything stored for {category}.{key}.")
+                    else:
+                        print("Eidos: Usage: /recall <category>.<key> (e.g., /recall user_profile.name)")
+
+                elif command == "/forget":
+                    match = re.match(r"(\w+)\.(\w+)", args_str)
+                    if match:
+                        category, key = match.groups()
+                        if engine.forget(category, key):
+                            print(f"Eidos: Okay, I've forgotten {category}.{key}.")
+                            if (category == "user_profile" and key == "name") or \
+                               (category == "user_preferences" and key == "theme"):
+                                engine.refresh_system_prompt()
+                                print(f"Eidos: My system prompt has been updated.")
+                        else:
+                            print(f"Eidos: I couldn't forget that, or it wasn't stored.")
+                    else:
+                        print("Eidos: Usage: /forget <category>.<key> (e.g., /forget user_profile.name)")
+
+                elif command == "/system_prompt": # Added for debugging
+                    print(f"Eidos (Debug): Current system prompt is:\n{engine.system_prompt}")
+
+                else:
+                    print(f"Eidos: Unknown command '{command}'. Try /remember, /recall, or /forget.")
+                continue # Skip sending command to LLM
 
             assistant_response = engine.get_response(user_input)
             print(f"Eidos: {assistant_response}")

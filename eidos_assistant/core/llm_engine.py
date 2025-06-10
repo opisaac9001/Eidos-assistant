@@ -1,6 +1,7 @@
 import yaml
 import os
 from openai import OpenAI, APIConnectionError, APIStatusError
+from memory import MemoryManager # Added import
 
 class LLMEngine:
     def __init__(self,
@@ -8,7 +9,7 @@ class LLMEngine:
                  api_base_url: str = "http://localhost:11434/v1",
                  api_key: str = "NA"):
         # Construct the absolute path to the persona config file
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = os.path.dirname(os.path.abspath(__file__)) # core directory
         self.persona_config_path = os.path.join(base_dir, persona_config_path)
         self.persona = None
         self.system_prompt = "You are a helpful AI assistant." # Default prompt
@@ -24,36 +25,76 @@ class LLMEngine:
             print(f"Error initializing OpenAI client: {e}")
             # self.client remains None
 
+        # Initialize MemoryManager
+        # MemoryManager expects path relative to project root (eidos_assistant/)
+        self.memory_manager = MemoryManager(memory_file_path="data/memory.json")
+
         self.load_persona() # Load persona after client init attempt
-        if self.persona: # If persona loaded successfully
+
+        # Construct system prompt after persona and memory are available
+        if self.persona:
             self.system_prompt = self._construct_system_prompt()
+        else: # Ensure system prompt is constructed even if persona fails but memory might be useful
+             self.system_prompt = self._construct_system_prompt()
+
 
     def _construct_system_prompt(self) -> str:
-        """Constructs the system prompt based on the loaded persona."""
-        if not self.persona:
-            return "You are a helpful AI assistant." # Default if no persona
+        """Constructs the system prompt based on the loaded persona and memory."""
+        prompt_parts = []
 
-        name = self.get_persona_attribute('identity.name') or "Assistant"
-        background = self.get_persona_attribute('identity.background_story') or "I am a large language model."
-        tone = self.get_persona_attribute('tone') or "helpful"
+        # Persona-based parts
+        if self.persona:
+            name = self.get_persona_attribute('identity.name') or "Assistant"
+            background = self.get_persona_attribute('identity.background_story') or "I am a large language model."
+            tone = self.get_persona_attribute('tone') or "helpful"
 
-        concise_pref = self.get_persona_attribute('preferences.prefers_concise_answers')
-        if concise_pref is None: # Handles case where the key might be missing entirely
-            conciseness = "detailed" # Default if preference not specified
-        else:
+            concise_pref = self.get_persona_attribute('preferences.prefers_concise_answers')
             conciseness = "concise" if concise_pref else "detailed"
+            if concise_pref is None: # Handles case where the key might be missing
+                conciseness = "detailed"
 
-        prompt = f"You are {name}, a {tone} assistant. "
-        prompt += f"Your background is: '{background}'. "
-        prompt += f"You prefer {conciseness} answers. "
-        # Future: Add more persona elements like signature phrases or quirks if desired
 
-        # Example: Handling a list preference (likes_analogies)
-        likes_analogies = self.get_persona_attribute('preferences.likes_analogies')
-        if likes_analogies is True: # Explicitly check for True
-            prompt += "You like to use analogies in your explanations. "
+            prompt_parts.append(f"You are {name}, a {tone} assistant.")
+            prompt_parts.append(f"Your background is: '{background}'.")
+            prompt_parts.append(f"You prefer {conciseness} answers.")
 
-        return prompt.strip()
+            likes_analogies = self.get_persona_attribute('preferences.likes_analogies')
+            if likes_analogies:
+                prompt_parts.append("You like to use analogies in your explanations.")
+        else:
+            prompt_parts.append("You are a helpful AI assistant.") # Fallback if no persona
+
+        # Memory-based parts
+        user_name = self.recall("user_profile", "name")
+        if user_name:
+            prompt_parts.append(f"You are speaking with {user_name}.")
+
+        user_theme_preference = self.recall("user_preferences", "theme")
+        if user_theme_preference and user_name: # Only add if user_name is known
+            prompt_parts.append(f"{user_name} prefers a {user_theme_preference} theme.")
+        elif user_theme_preference: # If theme known but not user name
+             prompt_parts.append(f"The user prefers a {user_theme_preference} theme.")
+
+
+        return " ".join(prompt_parts).strip()
+
+    def refresh_system_prompt(self):
+        """Reconstructs and updates the system prompt, typically after memory changes."""
+        self.system_prompt = self._construct_system_prompt()
+        # print(f"Debug: System prompt refreshed: {self.system_prompt}") # Optional: for debugging
+
+    # Memory Accessor Methods
+    def remember(self, category: str, key: str, value: any) -> bool:
+        """Stores a value in memory."""
+        return self.memory_manager.set_value(category, key, value)
+
+    def recall(self, category: str, key: str) -> any:
+        """Recalls a value from memory."""
+        return self.memory_manager.get_value(category, key)
+
+    def forget(self, category: str, key: str) -> bool:
+        """Forgets a value from memory."""
+        return self.memory_manager.delete_value(category, key)
 
     def get_response(self, user_input: str) -> str:
         """
@@ -148,14 +189,28 @@ if __name__ == '__main__':
         print(f"System Prompt: {engine.system_prompt}")
     else:
         print("\nWarning: Failed to load persona or persona is empty.")
-        print(f"Using default system prompt: {engine.system_prompt}")
+        # Even if persona fails, system_prompt is built from memory/defaults
+        print(f"System prompt (persona load failed or empty): {engine.system_prompt}")
+
 
     if not engine.client:
         print("\nError: OpenAI client failed to initialize. LLM calls will not work.")
     else:
         print("\nOpenAI client initialized.")
 
-    print("\nAttempting to get a response from LLM via get_response():")
+    print(f"\nInitial system prompt: {engine.system_prompt}")
+
+    print(f"\nRemembering user name 'Tester'... Result: {engine.remember('user_profile', 'name', 'Tester')}")
+    engine.refresh_system_prompt()
+    print(f"System prompt after remembering name: {engine.system_prompt}")
+
+    print(f"Recalling user name: {engine.recall('user_profile', 'name')}")
+
+    print(f"Remembering user theme 'dark'... Result: {engine.remember('user_preferences', 'theme', 'dark')}")
+    engine.refresh_system_prompt()
+    print(f"System prompt after remembering theme: {engine.system_prompt}")
+
+    print(f"\nAttempting to get a response from LLM (will use updated prompt):")
     user_query = "Tell me a fun fact about Python programming."
     print(f"User Query: \"{user_query}\"")
 
@@ -163,9 +218,18 @@ if __name__ == '__main__':
     print(f"\nLLM Response (or error):")
     print(response)
 
+    print(f"\nForgetting user name... Result: {engine.forget('user_profile', 'name')}")
+    engine.refresh_system_prompt()
+    print(f"System prompt after forgetting name: {engine.system_prompt}")
+
+    print(f"Forgetting user theme... Result: {engine.forget('user_preferences', 'theme')}")
+    engine.refresh_system_prompt()
+    print(f"System prompt after forgetting theme: {engine.system_prompt}")
+
+
     print("\n---")
     print("Note: If the response above is an error (e.g., connection error), ensure your local LLM server ")
     print("(like Ollama with a model such as 'llama2' or 'gemma:2b' pulled and served) is running and accessible ")
     print(f"at the configured API base URL ({engine.api_base_url}).")
-    print("If the client failed to initialize, check OpenAI library installation and API key/URL if modified.")
+    print("The data/memory.json file will reflect the last state of memory operations if they succeeded.")
     print("\nLLMEngine direct execution test complete.")

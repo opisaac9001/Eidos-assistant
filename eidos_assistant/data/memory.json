@@ -1,0 +1,10 @@
+{
+  "user_preferences": {
+    "example_preference": "dark_mode"
+  },
+  "facts": {
+    "example_fact": "The sky is blue during the day."
+  },
+  "user_profile": {},
+  "past_interactions": []
+}

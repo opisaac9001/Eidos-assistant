@@ -37,8 +37,29 @@ Ensure your LLM server is running *before* starting the Eidos Assistant. If the 
 ## Project Structure
 
 *   `core/`: Core components like the LLM engine and persona configuration.
+*   `core/memory.py`: Manages the assistant's long-term memory.
 *   `interface/`: User interface components (e.g., voice I/O).
 *   `skills/`: Future directory for assistant skills/plugins.
 *   `ingestion/`: Future directory for data ingestion pipelines.
 *   `data/`: Data storage (e.g., databases, logs).
+*   `data/memory.json`: Stores data like user preferences, facts, and profile information.
 *   `main.py`: Main application entry point.
+
+## Using Memory Commands
+
+You can interact with the assistant's long-term memory using special slash commands:
+
+*   `/remember <category>.<key>=<value>`: Stores a piece of information.
+    *   Example: `/remember user_profile.name=Alice`
+    *   Example: `/remember user_preferences.theme=dark`
+    *   If you update `user_profile.name` or `user_preferences.theme`, the assistant's system prompt will be updated immediately to reflect this change.
+    *   Values are attempted to be saved as boolean (`true`/`false`), integer, or float if they match, otherwise as string.
+
+*   `/recall <category>.<key>`: Retrieves a piece of information from memory.
+    *   Example: `/recall user_profile.name`
+
+*   `/forget <category>.<key>`: Removes a piece of information from memory.
+    *   Example: `/forget user_profile.name`
+    *   If this affects the system prompt (e.g. forgetting `user_profile.name`), the prompt will be updated.
+
+*   `/system_prompt`: (Debug command) Prints the current system prompt that the LLM engine is using.

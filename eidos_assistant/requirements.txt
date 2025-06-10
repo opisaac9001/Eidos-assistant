@@ -1,0 +1,10 @@
+PyYAML
+openai
+python-dotenv
+requests
+playsound
+pvporcupine
+openai-whisper
+PyAudio
+chromadb
+sentence-transformers

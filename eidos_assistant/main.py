@@ -211,8 +211,61 @@ def run_assistant():
                                 print(f"Pathos: Total entities found: {len(entities)}.")
                         else:
                             print("Pathos: Failed to retrieve entities from Home Assistant. Check logs for details.")
+                elif command == "/kb_add_file":
+                    file_path = args_str.strip()
+                    if not file_path:
+                        print("Pathos: Usage: /kb_add_file <file_path>")
+                    elif not engine.knowledge_base:
+                        print("Pathos: Knowledge Base is not available or not configured.")
+                    elif not os.path.exists(file_path) or not os.path.isfile(file_path):
+                        print(f"Pathos: File not found or is not a file: {file_path}")
+                    else:
+                        try:
+                            with open(file_path, 'r', encoding='utf-8') as f:
+                                content = f.read()
+                            document_id = os.path.basename(file_path)
+                            print(f"Pathos: Adding file '{file_path}' (ID: {document_id}) to Knowledge Base...")
+                            engine.knowledge_base.add_document(document_content=content, document_id=document_id)
+                            # KB.add_document() prints its own status.
+                            print(f"Pathos: Processing for '{document_id}' complete. Check logs from KnowledgeBase.")
+                        except Exception as e:
+                            print(f"Pathos: Error reading or processing file {file_path}: {e}")
+
+                elif command == "/kb_add_directory":
+                    directory_path = args_str.strip()
+                    if not directory_path:
+                        print("Pathos: Usage: /kb_add_directory <directory_path>")
+                    elif not engine.knowledge_base:
+                        print("Pathos: Knowledge Base is not available or not configured.")
+                    elif not os.path.exists(directory_path) or not os.path.isdir(directory_path):
+                        print(f"Pathos: Directory not found or is not a directory: {directory_path}")
+                    else:
+                        print(f"Pathos: Scanning directory '{directory_path}' for documents to add...")
+                        added_count = 0
+                        skipped_count = 0
+                        supported_extensions = ['.txt', '.md']
+                        for root_dir, _, files_in_dir in os.walk(directory_path):
+                            for file_item in files_in_dir:
+                                if any(file_item.lower().endswith(ext) for ext in supported_extensions):
+                                    current_file_path = os.path.join(root_dir, file_item)
+                                    try:
+                                        with open(current_file_path, 'r', encoding='utf-8') as f:
+                                            content = f.read()
+                                        # Use relative path from the input directory_path as document_id
+                                        document_id = os.path.relpath(current_file_path, directory_path)
+                                        print(f"Pathos: Adding file '{current_file_path}' (ID: {document_id}) to Knowledge Base...")
+                                        engine.knowledge_base.add_document(document_content=content, document_id=document_id)
+                                        added_count += 1
+                                    except Exception as e:
+                                        print(f"Pathos: Error reading or processing file {current_file_path}: {e}")
+                                        skipped_count += 1
+                                else:
+                                    # Silently skip non-supported files or print a debug message if desired
+                                    # print(f"Skipping non-supported file: {file_item}")
+                                    skipped_count +=1
+                        print(f"Pathos: Directory scan complete. Added {added_count} documents. Skipped/failed {skipped_count} files.")
                 else:
-                    print(f"Eidos: Unknown command '{command}'. Try /remember, /recall, /forget, /say, /system_prompt, /listen, /always_listen, /ha_status, /ha_toggle, or /ha_list_entities.")
+                    print(f"Eidos: Unknown command '{command}'. Try /remember, /recall, /forget, /say, /system_prompt, /listen, /always_listen, /ha_status, /ha_toggle, /ha_list_entities, /kb_add_file, or /kb_add_directory.")
                 continue # Skip sending command to LLM
 
             # Only try to get LLM response if client is available

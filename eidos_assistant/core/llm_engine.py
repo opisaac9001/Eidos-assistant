@@ -32,6 +32,14 @@ except ImportError as e:
     print(f"LLMEngine Critical Error: Could not import HomeAssistantSkill. Ensure skills module is in the correct path: {e}")
     HomeAssistantSkill = None # Define as None so type hints/checks for ha_skill don't break if import fails
 
+# Attempt to import KnowledgeBase from the same directory (core)
+try:
+    from .knowledge_base import KnowledgeBase
+except ImportError as e:
+    print(f"LLMEngine Critical Error: Could not import KnowledgeBase. Ensure knowledge_base.py is in the core directory: {e}")
+    KnowledgeBase = None # Define as None if import fails
+
+
 class LLMEngine:
     def __init__(self,
                  persona_config_path="persona_config.yaml",
@@ -88,6 +96,27 @@ class LLMEngine:
         else:
             print("LLMEngine Error: HomeAssistantSkill class not available due to import failure. HA features disabled.")
 
+        # Initialize KnowledgeBase
+        print("LLMEngine: Initializing KnowledgeBase...")
+        self.knowledge_base = None # Initialize to None
+        if KnowledgeBase: # Check if import was successful
+            try:
+                # Determine project root for default KB persistence directory
+                # __file__ is core/llm_engine.py -> os.path.dirname is core/ -> os.path.dirname again is eidos_assistant/
+                project_root_for_kb = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                kb_persist_directory = os.path.join(
+                    project_root_for_kb,
+                    "data",
+                    "kb_chroma_db"
+                )
+                self.knowledge_base = KnowledgeBase(persist_directory=kb_persist_directory)
+                # KnowledgeBase __init__ already prints success/failure details including path
+                # print(f"LLMEngine: KnowledgeBase initialized. Persistence directory: {kb_persist_directory}")
+            except Exception as e:
+                print(f"LLMEngine Error: Failed to initialize KnowledgeBase: {e}. RAG features will be unavailable.")
+                self.knowledge_base = None # Ensure it's None on error
+        else:
+            print("LLMEngine Error: KnowledgeBase class not available due to import failure. RAG features disabled.")
 
     def _construct_system_prompt(self) -> str:
         """Constructs the system prompt based on the loaded persona and memory."""
@@ -114,6 +143,9 @@ class LLMEngine:
                 prompt_parts.append("You like to use analogies in your explanations.")
         else:
             prompt_parts.append("You are a helpful AI assistant.") # Fallback if no persona
+
+        # Knowledge Base Instruction
+        prompt_parts.append("You have access to a knowledge base. When context from this knowledge base is provided with a question, please use it to formulate your answer.")
 
         # Memory-based parts
         user_name = self.recall("user_profile", "name")
@@ -195,9 +227,25 @@ class LLMEngine:
         assistant_name = self.get_persona_attribute('identity.name') or "Eidos" # Default to Eidos
         # assistant_tone = self.get_persona_attribute('tone') or "neutral" # Tone is part of system prompt
 
+        final_user_content = user_input # Default to original user input
+        # Augment with Knowledge Base context if available
+        if self.knowledge_base:
+            # Query the knowledge base, n_results can be tuned
+            retrieved_docs = self.knowledge_base.query(user_input, n_results=3)
+            if retrieved_docs: # If documents were found
+                formatted_context = "\n\n---\n\n".join(retrieved_docs) # Join chunks with a clear separator
+
+                # Construct the augmented prompt for the LLM
+                context_header = "Based on the following information from my knowledge base, please answer the user's question.\n\nRelevant Information:\n"
+                final_user_content = f"{context_header}{formatted_context}\n\n---\nUser's original question: {user_input}"
+
+                # Optional: Print a debug message
+                print(f"LLMEngine DEBUG: Using augmented prompt with KB context for query: '{user_input[:50]}...'")
+                # print(f"LLMEngine DEBUG: Context provided: {formatted_context[:300]}...") # For more detailed debugging
+
         messages = [
             {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": user_input}
+            {"role": "user", "content": final_user_content} # Use the potentially augmented input
         ]
 
         try:
@@ -487,5 +535,18 @@ if __name__ == '__main__':
     else:
         print("Expected Pathos response (if HA skill is not available): 'Pathos: I want to list Home Assistant entities, but the skill is not available.'")
 
+    print("\n--- LLMEngine KnowledgeBase Test ---")
+    if hasattr(engine, 'knowledge_base') and engine.knowledge_base:
+        print(f"LLMEngine has KnowledgeBase initialized.")
+        if engine.knowledge_base.client:
+            print(f"KnowledgeBase client type: {type(engine.knowledge_base.client)}")
+            if engine.knowledge_base.persist_directory:
+                 print(f"KnowledgeBase persistence directory: {engine.knowledge_base.resolved_persist_directory}")
+            if engine.knowledge_base.collection:
+                 print(f"KnowledgeBase collection name: {engine.knowledge_base.collection.name}")
+            else:
+                 print(f"KnowledgeBase collection: N/A (should be initialized)")
+    else:
+        print("LLMEngine: KnowledgeBase not available or failed to initialize.")
 
     print("\nLLMEngine direct execution test complete.")

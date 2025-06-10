@@ -8,6 +8,9 @@ Eidos Assistant is a conversational AI assistant designed to be extensible and r
 *   Pip (Python package installer)
 *   Access to a local Large Language Model (LLM) server that is compatible with the OpenAI API.
 *   For Text-to-Speech (TTS) functionality with the `/say` command, a running instance of a Kokoro-FastAPI compatible server is needed.
+*   **For Speech-to-Text (STT) functionality (`/listen` command):**
+    *   The `openai-whisper` Python library (which includes `torch`). You can typically install this via `pip install openai-whisper`.
+    *   `ffmpeg` installed on your system and available in your PATH. (e.g., `sudo apt install ffmpeg` on Debian/Ubuntu, or download from ffmpeg.org for other OS).
 
 ## Installation
 
@@ -17,7 +20,7 @@ Eidos Assistant is a conversational AI assistant designed to be extensible and r
     # pip install -r requirements.txt
     # (requirements.txt will be added in a future step)
     # For now, manually ensure the following are installed if not handled by subtasks:
-    # pip install PyYAML openai python-dotenv
+    # pip install PyYAML openai python-dotenv openai-whisper
     ```
 
 ## Configuration via .env File
@@ -68,6 +71,17 @@ The assistant is configured by default to attempt to connect to an LLM at `http:
 
 Ensure your servers are running *before* starting the Eidos Assistant. If the assistant cannot connect, it will indicate an error or relevant commands may fail.
 
+**Important Note on Speech-to-Text (STT):**
+
+The Speech-to-Text (STT) functionality (e.g., the `/listen` command) using Whisper has been implemented in the codebase but **could not be tested by the AI assistant developer due to limitations in the development sandbox environment** (specifically, issues installing large dependencies like `torch` which is part of `openai-whisper`).
+
+Users wishing to use STT must:
+1.  Ensure `openai-whisper` is installed in their Python environment (`pip install openai-whisper`).
+2.  Ensure `ffmpeg` is installed on their system and accessible in the PATH.
+3.  Verify that Whisper can download its models (e.g., `base.en`) which requires an internet connection on first run.
+
+The successful operation of STT features is contingent upon the user's local setup meeting these requirements.
+
 ## Project Structure
 
 *   `core/`: Core components like the LLM engine and persona configuration.
@@ -100,3 +114,7 @@ You can interact with the Eidos Assistant using special slash commands:
 
 *   `/say <text to speak>`: Generates speech from the provided text using the configured TTS server and saves it to `eidos_tts_output.mp3` in the project root.
     *   Example: `/say Hello, I am Eidos.`
+
+*   `/listen <path_to_audio_file>`: Transcribes the audio from the specified file using Whisper STT and displays the text.
+    *   Example: `/listen path/to/my_audio.wav`
+    *   **Note:** This command requires `openai-whisper` and `ffmpeg` to be correctly installed and configured in your environment. The STT model (`base.en` by default) will be downloaded by Whisper on first use.

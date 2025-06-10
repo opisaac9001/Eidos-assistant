@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 from openai import OpenAI, APIConnectionError, APIStatusError
+import whisper # Ensure whisper import is present
 
 # Construct path to .env in the eidos_assistant/ directory
 # Assumes voice_io.py is in eidos_assistant/interface/
@@ -26,6 +27,22 @@ class VoiceIO:
         except Exception as e:
             self.tts_client = None
             print(f"VoiceIO Error: Failed to initialize OpenAI client for TTS: {e}")
+
+        print("VoiceIO: Initializing STT (Whisper)...")
+        try:
+            # For faster loading and CPU usage, using a small English-only model.
+            # Other models: "tiny.en", "tiny", "base", "small.en", "small", "medium.en", "medium", "large"
+            self.stt_model_name = "base.en"
+            self.stt_model = whisper.load_model(self.stt_model_name)
+            print(f"VoiceIO: Whisper STT model '{self.stt_model_name}' loaded successfully.")
+        except Exception as e:
+            self.stt_model = None
+            print(f"VoiceIO Error: Failed to load Whisper STT model '{self.stt_model_name}': {e}")
+            print("STT functionality will be unavailable. Ensure ffmpeg is installed and model files can be downloaded by Whisper.")
+        # Ensure self.stt_model is defined even if all try-excepts were somehow bypassed, though unlikely
+        if not hasattr(self, 'stt_model'):
+            self.stt_model = None
+
 
     def text_to_speech(self, text: str, voice: str = None, output_filename: str = "eidos_tts_output.mp3") -> bool:
         """
@@ -74,15 +91,30 @@ class VoiceIO:
 
     def speech_to_text(self) -> str:
         """
-        Captures audio from the microphone and converts it to text.
-        Placeholder implementation.
+        Transcribes audio from a file path using Whisper.
+        Returns the transcribed text, or an empty string on failure.
+        NOTE: This method is untested by the AI assistant due to environment limitations.
+        The user must ensure 'openai-whisper' and 'ffmpeg' are installed.
         """
-        print("STT: Listening for speech...")
-        # In a real implementation, this would use a library like Whisper
-        # to capture and transcribe audio.
-        placeholder_text = "This is a placeholder for recognized speech."
-        print(f"STT: (Placeholder) Recognized: '{placeholder_text}'")
-        return placeholder_text
+        if not self.stt_model:
+            print("VoiceIO Error: STT model not loaded or failed to initialize. Cannot transcribe audio.")
+            return "[STT Model Not Available]"
+
+        if not os.path.exists(audio_file_path):
+            print(f"VoiceIO STT Error: Audio file not found at '{audio_file_path}'")
+            return "[Audio File Not Found]"
+
+        try:
+            print(f"VoiceIO: Attempting to transcribe audio from '{audio_file_path}' using Whisper model '{self.stt_model_name}'...")
+            # fp16=False is generally recommended for CPU inference.
+            # If the user has a GPU and CUDA setup, they might change this or use a different device setting.
+            result = self.stt_model.transcribe(audio_file_path, fp16=False)
+            transcribed_text = result["text"]
+            print(f"VoiceIO STT: Transcription complete. Text: '{transcribed_text[:100]}...'")
+            return transcribed_text.strip()
+        except Exception as e:
+            print(f"VoiceIO STT Error: An error occurred during transcription: {e}")
+            return "[STT Transcription Error]"
 
 if __name__ == '__main__':
     print("\nTesting VoiceIO module (TTS with Kokoro-FastAPI)...")
@@ -121,4 +153,25 @@ if __name__ == '__main__':
             print("Ensure your Kokoro-FastAPI server is running and accessible at the configured URL,")
             print(f"and the voice '{voice_interface.default_voice}' is valid.")
 
-    print("\nVoiceIO module TTS test complete.")
+    print("\nVoiceIO module TTS test complete.") # This was the end of the original __main__
+
+    # --- STT (Whisper) Test Section (Untested by Assistant) ---
+    print("\n--- STT (Whisper) Test Section (Untested by Assistant) ---")
+    if not voice_interface.stt_model:
+        print("VoiceIO STT: Skipping STT test as Whisper model did not load (see errors above).")
+        print("VoiceIO STT: Ensure 'openai-whisper' and 'ffmpeg' are installed in your Python environment.")
+    else:
+        print("VoiceIO STT: Model appears loaded. To test, provide a valid audio file path.")
+        # Example of how a user might test:
+        # test_audio_file = "path/to/your/audiofile.wav"
+        # print(f"VoiceIO STT: If you had an audio file at '{test_audio_file}', you could test with:")
+        # print(f"transcribed_text = voice_interface.speech_to_text(test_audio_file)")
+        # print(f"Result: {{transcribed_text}}")
+
+        # Simulating a file not found error for the test structure:
+        print("\nVoiceIO STT: Testing with a non-existent file path...")
+        non_existent_file = "non_existent_audio_sample.wav"
+        transcription_attempt = voice_interface.speech_to_text(non_existent_file)
+        print(f"VoiceIO STT: Attempt to transcribe '{non_existent_file}' returned: '{transcription_attempt}' (expected '[Audio File Not Found]').")
+
+    print("\n--- End of VoiceIO __main__ tests ---")

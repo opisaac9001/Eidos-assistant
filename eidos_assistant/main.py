@@ -338,8 +338,57 @@ def run_assistant():
                             print("Pathos: No results found for your query.")
                         else: # Results is None (an error occurred in the skill)
                             print(f"Pathos: An error occurred while searching for '{search_query}'. Check skill logs.")
+                elif command == "/news":
+                    args_list = args_str.strip().split()
+                    category_from_args = None
+                    limit_from_args = 5 # Default limit
+
+                    category_parts_temp = []
+                    i = 0
+                    while i < len(args_list):
+                        part = args_list[i]
+                        if part.lower() == "--limit":
+                            if i + 1 < len(args_list):
+                                try:
+                                    limit_from_args = int(args_list[i+1])
+                                    i += 1 # consume the number
+                                except ValueError:
+                                    print(f"Pathos: Invalid number for --limit ('{args_list[i+1]}'). Using default {limit_from_args}.")
+                            else:
+                                print("Pathos: --limit specified without a number. Using default.")
+                        else:
+                            category_parts_temp.append(part)
+                        i += 1
+
+                    if category_parts_temp:
+                        category_from_args = " ".join(category_parts_temp)
+                        if category_from_args.lower() == "all":
+                            category_from_args = None # Pass None to skill to fetch all
+
+                    if not engine.news_skill:
+                        print("Pathos: News skill is not available.")
+                    else:
+                        cat_display_name = category_from_args if category_from_args else "All Categories"
+                        print(f"Pathos: Fetching news headlines (Category: {cat_display_name}, Limit: {limit_from_args})...")
+                        headlines = engine.news_skill.fetch_news(category=category_from_args, num_headlines=limit_from_args)
+
+                        if headlines:
+                            print(f"Pathos: Recent Headlines (Category: {cat_display_name}):")
+                            for idx, headline_item in enumerate(headlines):
+                                print(f"--- Headline {idx+1} ---")
+                                print(f"  Title: {headline_item.get('title', 'N/A')}")
+                                print(f"  Published: {headline_item.get('published', 'N/A')}")
+                                print(f"  Source: {headline_item.get('source_feed', 'N/A')}")
+                                print(f"  Link: {headline_item.get('link', '#')}")
+                                summary = headline_item.get('summary', 'N/A')
+                                print(f"  Summary: {summary[:200]}{'...' if len(summary) > 200 else ''}")
+                            print("--- End of Headlines ---")
+                        elif headlines == []: # Empty list, no error but no results
+                            print(f"Pathos: No news headlines found for '{cat_display_name}'.")
+                        else: # None, an error occurred
+                            print("Pathos: An error occurred while fetching news headlines. Skill might have logged details.")
                 else:
-                    print(f"Eidos: Unknown command '{command}'. Try /remember, /recall, /forget, /say, /system_prompt, /listen, /always_listen, /ha_status, /ha_toggle, /ha_list_entities, /kb_add_file, /kb_add_directory, /weather, or /search.")
+                    print(f"Eidos: Unknown command '{command}'. Try /remember, /recall, /forget, /say, /system_prompt, /listen, /always_listen, /ha_status, /ha_toggle, /ha_list_entities, /kb_add_file, /kb_add_directory, /weather, /search, or /news.")
                 continue # Skip sending command to LLM
 
             # Only try to get LLM response if client is available
@@ -652,3 +701,130 @@ if __name__ == '__main__':
     print(f"Pathos response: {response_phoenix}")
 
     print("\n--- Eidos WeatherSkill Integration Test Complete ---")
+
+
+    print("\n\n--- Starting Eidos WebSearchSkill Integration Test ---")
+    # LLMEngine (engine) is already initialized.
+
+    print("\nIMPORTANT: WebSearchSkill uses DuckDuckGo and requires network access. Results may vary or fail based on network conditions.")
+    if not engine.web_search_skill:
+        print("FATAL: WebSearchSkill not initialized in LLMEngine. Cannot proceed with WebSearchSkill tests.")
+        sys.exit(1) # Exit if the skill isn't even there
+
+    def print_search_results(results, header="Web Search Results:"):
+        if results is None: # None indicates an error during search
+            print(f"{header} Search failed or an error occurred.")
+            return
+        if not results: # Empty list indicates no results found
+            print(f"{header} No results found.")
+            return
+        print(header)
+        for i, res in enumerate(results):
+            print(f"  --- Result {i+1} ---")
+            print(f"  Title: {res.get('title', 'N/A')}")
+            print(f"  Snippet: {res.get('snippet', 'N/A')[:150]}...") # Show more snippet
+            print(f"  URL: {res.get('url', 'N/A')}")
+        print("  --- End of Results ---")
+
+    # --- Direct Skill Invocation Tests ---
+    print("\n--- Testing Direct Skill Invocation (WebSearchSkill) ---")
+
+    print("\n--- Test Case 1: Search 'python programming benefits' ---")
+    direct_results1 = engine.web_search_skill.search("python programming benefits", num_results=2)
+    print_search_results(direct_results1, "Direct search for 'python programming benefits':")
+
+    print("\n--- Test Case 2: Search for gibberish 'ajskdfhaksjdfhasdkjfhasd' ---")
+    direct_results2 = engine.web_search_skill.search("ajskdfhaksjdfhasdkjfhasd", num_results=3)
+    print_search_results(direct_results2, "Direct search for 'ajskdfhaksjdfhasdkjfhasd':")
+
+
+    # --- LLM Integration Tests (Simulating LLM JSON output and Synthesis) ---
+    print("\n--- Testing LLM Integration with WebSearchSkill (Simulated LLM JSON & Synthesis) ---")
+
+    if not engine.client:
+        print("\nWARNING: LLM client (OpenAI client) not initialized in LLMEngine. ")
+        print("LLM synthesis part of the test will likely fail or return error messages.")
+
+    original_user_query_for_web_search = "Who is the current prime minister of Canada?"
+    print(f"\n--- Test Case 3: LLM Query - '{original_user_query_for_web_search}' (expecting web search) ---")
+
+    # Step A: Simulate the LLM deciding to use the web_search tool.
+    # The LLMEngine's get_response method is designed to handle this:
+    # If it receives a JSON from the LLM that's a web_search request, it will perform the search,
+    # then construct a new prompt with results, and call the LLM *again* for synthesis.
+
+    simulated_llm_search_request_json = f'{{"tool_name": "web_search", "action": "search", "query": "{original_user_query_for_web_search}"}}'
+    print(f"Simulated first LLM output (request to search): {simulated_llm_search_request_json}")
+
+    # This single call to get_response should trigger the whole two-step process if an LLM is available for the synthesis part.
+    # The `user_input` for this `get_response` call is the original user query, which `get_response` will use
+    # if it needs to construct the synthesis prompt.
+    print("\nCalling engine.get_response() with the simulated search JSON...")
+    final_answer_from_search = engine.get_response(simulated_llm_search_request_json)
+    # This response *should* be the synthesized answer from the second LLM call if all went well.
+    # The LLM Engine's get_response will have print statements indicating the search and synthesis steps.
+    print(f"\nPathos final synthesized response after web search: {final_answer_from_search}")
+
+    print("\n--- Eidos WebSearchSkill Integration Test Complete ---")
+
+
+    print("\n\n--- Starting Eidos NewsSkill Integration Test ---")
+    # LLMEngine (engine) is already initialized.
+
+    print("\nIMPORTANT: NewsSkill uses feedparser and requires network access to fetch RSS feeds. Results may vary or fail based on network conditions or feed availability.")
+    if not engine.news_skill:
+        print("FATAL: NewsSkill not initialized in LLMEngine. Cannot proceed with NewsSkill tests.")
+        sys.exit(1) # Exit if the skill isn't even there
+
+    def print_formatted_headlines(headlines, category_title="News"):
+        if headlines is None: # None indicates an error during fetch
+            print(f"Failed to fetch headlines for {category_title} or an error occurred.")
+            return
+        if not headlines: # Empty list indicates no results found
+            print(f"No headlines found for {category_title}.")
+            return
+
+        print(f"\nRecent Headlines for {category_title} (found {len(headlines)}):")
+        for i, h in enumerate(headlines):
+            print(f"  {i+1}. Title: {h.get('title', 'N/A')}")
+            print(f"     Published: {h.get('published', 'N/A')}")
+            print(f"     Source: {h.get('source_feed', 'N/A')}")
+            print(f"     Link: {h.get('link', '#')}")
+            summary = h.get('summary', 'N/A')
+            print(f"     Summary: {summary[:150] + '...' if len(summary) > 150 else summary}")
+            print("  ---")
+
+    # --- Direct Skill Invocation Tests ---
+    print("\n--- Testing Direct Skill Invocation (NewsSkill) ---")
+
+    print("\n--- Test Case 1: /news (all categories, 5 headlines) ---")
+    headlines1 = engine.news_skill.fetch_news(category=None, num_headlines=5)
+    print_formatted_headlines(headlines1, "All Categories (Default Limit 5)")
+
+    print("\n--- Test Case 2: /news Tech News --limit 2 ---")
+    headlines2 = engine.news_skill.fetch_news(category="Tech News", num_headlines=2)
+    print_formatted_headlines(headlines2, "Tech News (Limit 2)")
+
+    print("\n--- Test Case 3: /news NonExistentCategory --limit 3 ---")
+    # NewsSkill's current logic defaults to "All Feeds" if category is not found
+    headlines3 = engine.news_skill.fetch_news(category="NonExistentCategory", num_headlines=3)
+    print_formatted_headlines(headlines3, "NonExistentCategory (Fallback to All, Limit 3)")
+
+
+    # --- LLM Integration Tests (Simulating LLM JSON output) ---
+    print("\n--- Testing LLM Integration with NewsSkill (Simulated LLM JSON) ---")
+
+    if not engine.client:
+        print("\nWARNING: LLM client (OpenAI client) not initialized in LLMEngine. ")
+        print("Simulated LLM JSON tests will still run the skill logic, but a real LLM query for other purposes would fail.")
+
+    print("\n--- Test Case 4: LLM Query - 'Any science news?' (expecting 2 headlines) ---")
+    simulated_llm_news_request_json = '{"tool_name": "news", "action": "fetch_news", "category": "Science News", "num_headlines": "2"}'
+    print(f"Simulated LLM output (request for news): {simulated_llm_news_request_json}")
+
+    # This call to get_response should trigger NewsSkill and format the output.
+    # No second LLM call is made by NewsSkill integration itself, it just returns formatted text.
+    response_science_news = engine.get_response(simulated_llm_news_request_json)
+    print(f"Pathos response: {response_science_news}")
+
+    print("\n--- Eidos NewsSkill Integration Test Complete ---")

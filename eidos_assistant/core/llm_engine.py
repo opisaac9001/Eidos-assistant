@@ -29,16 +29,19 @@ try:
         sys.path.insert(0, skills_dir_path) # Insert at beginning for priority
     from home_assistant_skill import HomeAssistantSkill
     from weather_skill import WeatherSkill
-    from web_search_skill import WebSearchSkill # Added WebSearchSkill import
+    from web_search_skill import WebSearchSkill
+    from news_skill import NewsSkill # Added NewsSkill import
 except ImportError as e:
     # Updated error message to reflect multiple possible missing skills
-    print(f"LLMEngine Critical Error: Could not import one or more skill modules (HomeAssistantSkill, WeatherSkill, WebSearchSkill). Ensure skills are in the correct path: {e}")
+    print(f"LLMEngine Critical Error: Could not import one or more skill modules (HomeAssistantSkill, WeatherSkill, WebSearchSkill, NewsSkill). Ensure skills are in the correct path: {e}")
     if 'HomeAssistantSkill' not in locals():
         HomeAssistantSkill = None
     if 'WeatherSkill' not in locals():
         WeatherSkill = None
     if 'WebSearchSkill' not in locals():
         WebSearchSkill = None
+    if 'NewsSkill' not in locals():
+        NewsSkill = None
 
 # Attempt to import KnowledgeBase from the same directory (core)
 try:
@@ -157,6 +160,20 @@ class LLMEngine:
         else:
             print("LLMEngine Error: WebSearchSkill class not available due to import failure. Web search features disabled.")
 
+        # Initialize NewsSkill
+        print("LLMEngine: Initializing NewsSkill...")
+        self.news_skill = None
+        if NewsSkill: # Check if import was successful
+            try:
+                self.news_skill = NewsSkill()
+                # NewsSkill __init__ prints its own status
+                print("LLMEngine: NewsSkill initialized.")
+            except Exception as e:
+                print(f"LLMEngine Error: Failed to initialize NewsSkill: {e}. News features will be unavailable.")
+                self.news_skill = None
+        else:
+            print("LLMEngine Error: NewsSkill class not available due to import failure. News features disabled.")
+
     def _construct_system_prompt(self) -> str:
         """Constructs the system prompt based on the loaded persona and memory."""
         prompt_parts = []
@@ -262,6 +279,22 @@ class LLMEngine:
         prompt_parts.append("You: {\"tool_name\": \"web_search\", \"action\": \"search\", \"query\": \"latest news Project Gemini\"}")
         prompt_parts.append("After the search results are provided, you will be asked to synthesize an answer based on them.")
         prompt_parts.append("--- End Web Search ---")
+
+        # News Headlines Tool Instructions
+        prompt_parts.append("\n\n--- News Headlines ---")
+        prompt_parts.append("If the user asks for news headlines, you can request them. Respond ONLY with a JSON object in the following format:")
+        prompt_parts.append("{")
+        prompt_parts.append("  \"tool_name\": \"news\",")
+        prompt_parts.append("  \"action\": \"fetch_news\",")
+        prompt_parts.append("  \"category\": \"<optional_category_e.g., Tech News, World News, Science News, or All>\",")
+        prompt_parts.append("  \"num_headlines\": \"<optional_number_of_headlines, defaults to 5>\"") # Corrected trailing quote
+        prompt_parts.append("}")
+        prompt_parts.append("\nExample: User: \"What's the latest tech news?\"")
+        prompt_parts.append("You: {\"tool_name\": \"news\", \"action\": \"fetch_news\", \"category\": \"Tech News\", \"num_headlines\": 3}")
+        prompt_parts.append("User: \"Give me 2 headlines from world news.\"")
+        prompt_parts.append("You: {\"tool_name\": \"news\", \"action\": \"fetch_news\", \"category\": \"World News\", \"num_headlines\": 2}")
+        prompt_parts.append("If the request is NOT about fetching news headlines, respond normally.")
+        prompt_parts.append("--- End News Headlines ---")
 
         return " ".join(prompt_parts).strip()
 
@@ -505,8 +538,58 @@ class LLMEngine:
                             return f"{assistant_name_prefix}I found some information, but had trouble processing it to form an answer."
                     else:
                         return f"{assistant_name_prefix}Unknown Web Search action: '{action}'."
+
+                elif isinstance(data, dict) and data.get("tool_name") == "news":
+                    print(f"LLMEngine: Detected News tool call: {data}")
+                    action = data.get("action")
+                    assistant_name_prefix = f"{self.get_persona_attribute('identity.name') or 'Pathos'}: "
+
+                    if not self.news_skill:
+                        return f"{assistant_name_prefix}I want to fetch news, but the NewsSkill is not available."
+
+                    if action == "fetch_news":
+                        category = data.get("category") # Can be None or "All"
+                        num_headlines_str = data.get("num_headlines", "5") # Default to 5 as string
+                        try:
+                            num_headlines = int(num_headlines_str)
+                        except ValueError:
+                            print(f"LLMEngine Warning: Invalid num_headlines '{num_headlines_str}', defaulting to 5.")
+                            num_headlines = 5
+
+                        print(f"LLMEngine: Fetching news for category: '{category if category else 'All'}' (limit: {num_headlines})...")
+                        headlines = self.news_skill.fetch_news(category=category, num_headlines=num_headlines)
+
+                        if headlines: # If list is not None and not empty
+                            response_parts = [f"{assistant_name_prefix}Here are the latest headlines"]
+                            # Try to get a more descriptive category name if 'category' was a key in default_feed_urls
+                            # or if it was None/All and NewsSkill internally used a default.
+                            # For now, directly use what LLM provided or 'general' if None.
+                            cat_display_name = category
+                            if not category or category.lower() == "all":
+                                cat_display_name = "general"
+
+                            if cat_display_name:
+                                response_parts.append(f" for '{cat_display_name}'")
+                            response_parts.append(":\n")
+
+                            for i, headline in enumerate(headlines):
+                                response_parts.append(f"\n{i+1}. {headline.get('title', 'No Title')}")
+                                if headline.get('published'):
+                                     response_parts.append(f" (Published: {headline.get('published')})")
+                                # Optionally include link and summary, but can make response very verbose.
+                                # For now, title and date should be good for LLM to then discuss.
+                                # response_parts.append(f"\n   Link: {headline.get('link', '#')}")
+                                # if headline.get('summary'):
+                                #    response_parts.append(f"\n   Summary: {headline.get('summary', '')[:150]}...")
+                            return "".join(response_parts).strip()
+                        elif headlines == []: # Empty list means no news found, but no error
+                            return f"{assistant_name_prefix}I couldn't find any news headlines for '{category if category else 'the specified criteria'}'. The sources might be unavailable or no new articles were found at the moment."
+                        else: # None means an error occurred in the skill
+                            return f"{assistant_name_prefix}Sorry, I encountered an error while trying to fetch news headlines."
+                    else:
+                        return f"{assistant_name_prefix}Unknown News action: '{action}'."
                 else:
-                    # Not a HA, Weather, or Web Search tool call, or not properly formatted JSON for it. Return original LLM text.
+                    # Not a HA, Weather, Web Search or News tool call, or not properly formatted JSON for it. Return original LLM text.
                     return llm_response_content
 
             except json.JSONDecodeError:
@@ -753,5 +836,24 @@ if __name__ == '__main__':
     else:
         print("Expected Pathos response: Error message about WebSearchSkill not being available.")
 
+    print("\n--- LLMEngine News Skill Test (Conceptual) ---")
+    if hasattr(engine, 'news_skill') and engine.news_skill:
+        print("LLMEngine has NewsSkill initialized.")
+    else:
+        print("LLMEngine: NewsSkill not available or failed to initialize.")
+
+    simulated_llm_news_json = '''
+    {
+      "tool_name": "news",
+      "action": "fetch_news",
+      "category": "Tech News",
+      "num_headlines": 2
+    }
+    '''
+    print(f"\nIf LLM produced: {simulated_llm_news_json.strip()}")
+    if hasattr(engine, 'news_skill') and engine.news_skill:
+        print("Expected Pathos response: Formatted news headlines for Tech News.")
+    else:
+        print("Expected Pathos response: Error message about NewsSkill not being available.")
 
     print("\nLLMEngine direct execution test complete.")

@@ -35,6 +35,7 @@ Pathos Assistant is a conversational AI assistant designed to be extensible and 
     # For voice: openai-whisper, pvporcupine, playsound, PyAudio.
     # For Home Assistant: requests.
     # For Knowledge Base (RAG): chromadb, sentence-transformers.
+    # For News Headlines: feedparser.
     ```
 
 ## Configuration via .env File
@@ -93,6 +94,20 @@ To enable Pathos to fetch current weather information, you need to configure an 
     OPENWEATHERMAP_API_KEY="YOUR_API_KEY_HERE"
     ```
     Replace `"YOUR_API_KEY_HERE"` with the actual key you obtained.
+
+### News Skill
+
+Pathos can fetch recent news headlines from a predefined list of RSS feeds. This skill uses the `feedparser` library to parse RSS data.
+
+Currently, the skill includes default feeds for categories such as:
+*   **World News**: BBC News
+*   **Tech News**: TechCrunch
+*   **Science News**: ScienceDaily
+*   **General Tech**: Ars Technica
+
+You can request news from one of these specific categories, or get a mix from all available sources if no category (or "all") is specified. When fetching from all sources, headlines are aggregated and sorted by publication date.
+
+Customizing the list of RSS feeds may be supported in a future update. No API keys are required for the current default news feeds.
 
 **Natural Language Control for Home Assistant**
 Pathos can now understand natural language commands to control your Home Assistant devices (e.g., "turn on the lights", "check thermostat status") and can also list available devices to help you understand its capabilities.
@@ -175,3 +190,12 @@ You can interact with the Eidos Assistant using special slash commands:
     *   Example: `/kb_add_file path/to/my_document.txt`
 *   `/kb_add_directory <directory_path>`: Recursively scans the specified directory for `.txt` and `.md` files and adds their content to the knowledge base. The relative path of each file from the specified directory is used as its document ID.
     *   Example: `/kb_add_directory path/to/my_notes_folder/`
+*   `/weather <city_name> [--units imperial|metric]`: Fetches the current weather for the specified city. Units default to metric if not specified.
+    *   Example 1: `/weather London`
+    *   Example 2: `/weather "New York" --units imperial`
+*   `/search <query>`: Performs a web search using DuckDuckGo for the given query and displays the top results.
+    *   Example: `/search latest AI advancements`
+*   `/news [category] [--limit <number>]`: Fetches recent news headlines. You can specify an optional `category` (e.g., 'Tech News', 'World News', 'Science News', 'Ars Technica'). If no category or 'all' is provided, it fetches a mix from default sources. The `--limit` flag (defaulting to 5) controls the number of headlines returned.
+    *   Example 1: `/news`
+    *   Example 2: `/news Tech News --limit 3`
+    *   Example 3: `/news "World News"`

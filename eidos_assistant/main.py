@@ -772,6 +772,75 @@ if __name__ == '__main__':
     # LLMEngine (engine) is already initialized.
 
     print("\nIMPORTANT: NewsSkill uses feedparser and requires network access to fetch RSS feeds. Results may vary or fail based on network conditions or feed availability.")
+    if not engine.news_skill: # Check if the legacy attribute exists, or use new framework check if applicable
+        # If NewsSkill were refactored and registered, this check would be:
+        # if "get_news" not in engine.skills: # Assuming "get_news" is its tool_name
+        print("FATAL: NewsSkill not initialized in LLMEngine (or not registered if refactored). Cannot proceed with NewsSkill tests.")
+        # For now, assuming legacy self.news_skill attribute for testing this specific skill as it's not refactored yet.
+        if not hasattr(engine, 'news_skill') or not engine.news_skill:
+             sys.exit(1)
+
+
+    def print_formatted_headlines(headlines, category_title="News"):
+        if headlines is None: # None indicates an error during fetch
+            print(f"Failed to fetch headlines for {category_title} or an error occurred.")
+            return
+        if not headlines: # Empty list indicates no results found
+            print(f"No headlines found for {category_title}.")
+            return
+
+        print(f"\nRecent Headlines for {category_title} (found {len(headlines)}):")
+        for i, h in enumerate(headlines):
+            print(f"  {i+1}. Title: {h.get('title', 'N/A')}")
+            print(f"     Published: {h.get('published', 'N/A')}")
+            print(f"     Source: {h.get('source_feed', 'N/A')}")
+            print(f"     Link: {h.get('link', '#')}")
+            summary = h.get('summary', 'N/A')
+            print(f"     Summary: {summary[:150] + '...' if len(summary) > 150 else summary}")
+            print("  ---")
+
+    # --- Direct Skill Invocation Tests (using legacy self.news_skill) ---
+    print("\n--- Testing Direct Skill Invocation (NewsSkill - Legacy Access) ---")
+
+    if hasattr(engine, 'news_skill') and engine.news_skill:
+        print("\n--- Test Case 1: /news (all categories, 5 headlines) ---")
+        headlines1 = engine.news_skill.fetch_news(category=None, num_headlines=5)
+        print_formatted_headlines(headlines1, "All Categories (Default Limit 5)")
+
+        print("\n--- Test Case 2: /news Tech News --limit 2 ---")
+        headlines2 = engine.news_skill.fetch_news(category="Tech News", num_headlines=2)
+        print_formatted_headlines(headlines2, "Tech News (Limit 2)")
+
+        print("\n--- Test Case 3: /news NonExistentCategory --limit 3 ---")
+        headlines3 = engine.news_skill.fetch_news(category="NonExistentCategory", num_headlines=3)
+        print_formatted_headlines(headlines3, "NonExistentCategory (Fallback to All, Limit 3)")
+    else:
+        print("Skipping direct NewsSkill tests as legacy self.news_skill is not available.")
+
+
+    # --- LLM Integration Tests (Simulating LLM JSON output) ---
+    print("\n--- Testing LLM Integration with NewsSkill (Simulated LLM JSON) ---")
+
+    if not engine.client:
+        print("\nWARNING: LLM client (OpenAI client) not initialized in LLMEngine. ")
+        print("Simulated LLM JSON tests will still run the skill logic, but a real LLM query for other purposes would fail.")
+
+    print("\n--- Test Case 4: LLM Query - 'Any science news?' (expecting 2 headlines) ---")
+    # This simulated JSON should match what the LLM is prompted to produce for the NewsSkill
+    # (i.e. tool_name: "news", action: "fetch_news")
+    simulated_llm_news_request_json = '{"tool_name": "news", "action": "fetch_news", "category": "Science News", "num_headlines": "2"}'
+    print(f"Simulated LLM output (request for news): {simulated_llm_news_request_json}")
+
+    response_science_news = engine.get_response(simulated_llm_news_request_json)
+    print(f"Pathos response: {response_science_news}")
+
+    print("\n--- Eidos NewsSkill Integration Test Complete ---")
+
+
+    print("\n\n--- Starting Eidos NewsSkill Integration Test ---")
+    # LLMEngine (engine) is already initialized.
+
+    print("\nIMPORTANT: NewsSkill uses feedparser and requires network access to fetch RSS feeds. Results may vary or fail based on network conditions or feed availability.")
     if not engine.news_skill:
         print("FATAL: NewsSkill not initialized in LLMEngine. Cannot proceed with NewsSkill tests.")
         sys.exit(1) # Exit if the skill isn't even there

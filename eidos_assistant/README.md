@@ -36,6 +36,7 @@ Pathos Assistant is a conversational AI assistant designed to be extensible and 
     # For Home Assistant: requests.
     # For Knowledge Base (RAG): chromadb, sentence-transformers.
     # For News Headlines: feedparser.
+    # For Web Search: duckduckgo-search.
     ```
 
 ## Configuration via .env File
@@ -95,6 +96,8 @@ To enable Pathos to fetch current weather information, you need to configure an 
     ```
     Replace `"YOUR_API_KEY_HERE"` with the actual key you obtained.
 
+The WeatherSkill has been refactored to use the new Skill Capability Framework (see below). Its `tool_name` for LLM interaction is now `"get_weather"`. For example, if the LLM decides to fetch weather, it would output JSON like: `{"tool_name": "get_weather", "parameters": {"city": "London", "units": "metric"}}`.
+
 ### News Skill
 
 Pathos can fetch recent news headlines from a predefined list of RSS feeds. This skill uses the `feedparser` library to parse RSS data.
@@ -125,6 +128,32 @@ This feature uses ChromaDB for storing document embeddings locally and Sentence-
 The knowledge base data is persisted by default in the `eidos_assistant/data/kb_chroma_db/` directory.
 
 Note: The effectiveness of this feature depends on the quality of ingested documents and the relevance of your queries to their content.
+
+
+## Skill Capability Framework
+
+To provide a standardized and extensible way to add new functionalities (tools) that the LLM can use, Pathos Assistant incorporates a Skill Capability Framework.
+
+**Core Concepts:**
+
+*   **`BaseSkill` Abstract Class:** Located in `eidos_assistant/skills/base_skill.py`, this class defines the contract that all skills must adhere to. It requires skills to implement specific methods for defining their capabilities and for execution.
+*   **Tool Signature (`get_tool_signature()`):** Each skill must implement this method. It returns a structured dictionary (or a list of them if the skill provides multiple distinct tools) that describes the tool(s) to the LLM. This signature includes:
+    *   `tool_name`: A unique name for the tool (e.g., "get_weather", "home_assistant_control").
+    *   `description`: A clear description of what the tool does.
+    *   `parameters`: A list of parameters the tool accepts. Each parameter is defined with its `name`, `type` (e.g., "string", "integer", "boolean" based on JSON schema types), `description`, and whether it's `required`.
+    *   The structure is defined using `ToolSignature` and `ToolParameter` TypedDicts in `base_skill.py` for clarity and type checking.
+*   **Execution (`execute()`):** Each skill must implement this method. The `LLMEngine` calls `execute(action: str | None, args: Dict[str, Any])` with arguments parsed from the LLM's JSON output. The `action` parameter allows a single skill to handle multiple related functions if needed (though often, an 'action' can also be a regular parameter). The method returns a result that the `LLMEngine` then processes (e.g., formats for the user or uses in a subsequent LLM call).
+
+**Integration with LLMEngine:**
+
+1.  **Registration:** Skill instances (that inherit from `BaseSkill`) are registered with the `LLMEngine` using its `register_skill()` method during initialization.
+2.  **Dynamic System Prompt:** The `LLMEngine` dynamically constructs the "Available Tools" section of its system prompt by iterating through the signatures of all registered skills. This informs the LLM about what tools it can request and how to format the JSON for them.
+3.  **Dynamic Dispatch:** When the LLM responds with a JSON object indicating a tool call, the `LLMEngine` uses the `tool_name` to find the corresponding registered skill in its `self.skills` dictionary and then calls its `execute()` method with the provided parameters.
+
+**Transition:**
+This is a new framework. Existing skills (like Home Assistant, Web Search, News) will be gradually refactored to inherit from `BaseSkill` and integrate with this system. During the transition, `LLMEngine` maintains both the new dynamic dispatch mechanism and legacy hardcoded handling for non-refactored skills. The `WeatherSkill` is the first skill to be fully refactored to this new framework.
+
+The code for the framework and individual skills includes comments to guide developers.
 
 
 ## Running the Assistant
@@ -190,7 +219,7 @@ You can interact with the Eidos Assistant using special slash commands:
     *   Example: `/kb_add_file path/to/my_document.txt`
 *   `/kb_add_directory <directory_path>`: Recursively scans the specified directory for `.txt` and `.md` files and adds their content to the knowledge base. The relative path of each file from the specified directory is used as its document ID.
     *   Example: `/kb_add_directory path/to/my_notes_folder/`
-*   `/weather <city_name> [--units imperial|metric]`: Fetches the current weather for the specified city. Units default to metric if not specified.
+*   `/weather <city_name> [--units imperial|metric]`: Fetches the current weather for the specified city. Units default to metric if not specified. The LLM will use the tool name `"get_weather"` for this functionality.
     *   Example 1: `/weather London`
     *   Example 2: `/weather "New York" --units imperial`
 *   `/search <query>`: Performs a web search using DuckDuckGo for the given query and displays the top results.

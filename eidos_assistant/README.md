@@ -66,10 +66,14 @@ PORCUPINE_SENSITIVITIES=""
 # Home Assistant Configuration
 HOME_ASSISTANT_URL="http://homeassistant.local:8123"
 HOME_ASSISTANT_TOKEN="YOUR_LONG_LIVED_ACCESS_TOKEN_HERE"
+
+# OpenWeatherMap API Key (for Weather Skill)
+OPENWEATHERMAP_API_KEY="YOUR_OPENWEATHERMAP_API_KEY_HERE"
 ```
 
 **Key Environment Variables:**
 (Details as previously defined)
+*   `OPENWEATHERMAP_API_KEY`: Your API key from OpenWeatherMap.org, required for the Weather skill to fetch current weather data.
 
 The application will attempt to load these variables. If `.env` is not found or a variable is missing, fallback default values will be used (which also point to common local server addresses).
 Make sure your `.env` file is added to your `.gitignore` to avoid committing sensitive information.
@@ -79,6 +83,16 @@ Make sure your `.env` file is added to your `.gitignore` to avoid committing sen
 
 **Setting up Home Assistant Integration:**
 (Details as previously defined)
+
+**Setting up Weather Skill:**
+
+To enable Pathos to fetch current weather information, you need to configure an API key from OpenWeatherMap.
+1.  Sign up for a free (or paid) API key at [https://openweathermap.org/appid](https://openweathermap.org/appid). The "Current Weather Data" API is available for free.
+2.  Once you have your API key, add it to your `eidos_assistant/.env` file:
+    ```env
+    OPENWEATHERMAP_API_KEY="YOUR_API_KEY_HERE"
+    ```
+    Replace `"YOUR_API_KEY_HERE"` with the actual key you obtained.
 
 **Natural Language Control for Home Assistant**
 Pathos can now understand natural language commands to control your Home Assistant devices (e.g., "turn on the lights", "check thermostat status") and can also list available devices to help you understand its capabilities.

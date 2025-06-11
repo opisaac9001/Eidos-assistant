@@ -28,9 +28,14 @@ try:
     if skills_dir_path not in sys.path:
         sys.path.insert(0, skills_dir_path) # Insert at beginning for priority
     from home_assistant_skill import HomeAssistantSkill
+    from weather_skill import WeatherSkill # Added WeatherSkill import
 except ImportError as e:
-    print(f"LLMEngine Critical Error: Could not import HomeAssistantSkill. Ensure skills module is in the correct path: {e}")
-    HomeAssistantSkill = None # Define as None so type hints/checks for ha_skill don't break if import fails
+    # Updated error message to reflect multiple possible missing skills
+    print(f"LLMEngine Critical Error: Could not import one or more skill modules (HomeAssistantSkill, WeatherSkill). Ensure skills are in the correct path: {e}")
+    if 'HomeAssistantSkill' not in locals(): # Check if specific import failed
+        HomeAssistantSkill = None
+    if 'WeatherSkill' not in locals(): # Check if specific import failed
+        WeatherSkill = None
 
 # Attempt to import KnowledgeBase from the same directory (core)
 try:
@@ -118,6 +123,23 @@ class LLMEngine:
         else:
             print("LLMEngine Error: KnowledgeBase class not available due to import failure. RAG features disabled.")
 
+        # Initialize WeatherSkill
+        print("LLMEngine: Initializing WeatherSkill...")
+        self.weather_skill = None # Initialize to None
+        if WeatherSkill: # Check if import was successful
+            try:
+                self.weather_skill = WeatherSkill()
+                # WeatherSkill __init__ already prints API key status
+                if not self.weather_skill.api_key or self.weather_skill.api_key == "YOUR_OPENWEATHERMAP_API_KEY_HERE":
+                    print("LLMEngine Warning: WeatherSkill initialized, but API key not configured or is placeholder. Weather features likely disabled.")
+                else:
+                    print("LLMEngine: WeatherSkill initialized with API key.")
+            except Exception as e:
+                print(f"LLMEngine Error: Failed to initialize WeatherSkill: {e}. Weather features will be unavailable.")
+                self.weather_skill = None # Ensure it's None on error
+        else:
+            print("LLMEngine Error: WeatherSkill class not available due to import failure. Weather features disabled.")
+
     def _construct_system_prompt(self) -> str:
         """Constructs the system prompt based on the loaded persona and memory."""
         prompt_parts = []
@@ -194,6 +216,22 @@ class LLMEngine:
         prompt_parts.append("You: {\"tool_name\": \"home_assistant\", \"action\": \"list_entities\"}")
         prompt_parts.append("\nIf the request is NOT about Home Assistant, or if you are unsure of the entity_id, domain, or service, respond normally as a helpful assistant without using the JSON format.")
         prompt_parts.append("--- End Home Assistant Control ---")
+
+        # Weather Tool Instructions
+        prompt_parts.append("\n\n--- Weather Information ---")
+        prompt_parts.append("If the user asks about the current weather, you MUST respond ONLY with a JSON object in the following format:")
+        prompt_parts.append("{")
+        prompt_parts.append("  \"tool_name\": \"weather\",")
+        prompt_parts.append("  \"action\": \"get_current_weather\",")
+        prompt_parts.append("  \"city\": \"<city_name_e.g., London, Paris, New York>\",")
+        prompt_parts.append("  \"units\": \"<metric_or_imperial (optional, defaults to metric)>\"") # Corrected trailing quote
+        prompt_parts.append("}")
+        prompt_parts.append("\nExample: User: \"What's the weather in Berlin?\"") # Corrected quote placement
+        prompt_parts.append("You: {\"tool_name\": \"weather\", \"action\": \"get_current_weather\", \"city\": \"Berlin\"}")
+        prompt_parts.append("User: \"How hot is it in Phoenix in Fahrenheit?\"")
+        prompt_parts.append("You: {\"tool_name\": \"weather\", \"action\": \"get_current_weather\", \"city\": \"Phoenix\", \"units\": \"imperial\"}")
+        prompt_parts.append("If the request is NOT about current weather, respond normally.")
+        prompt_parts.append("--- End Weather Information ---")
 
         return " ".join(prompt_parts).strip()
 
@@ -326,10 +364,10 @@ class LLMEngine:
                         if entities is not None:
                             if entities: # List is not None and not empty
                                 entity_list_str = []
-                                for entity in entities:
+                                for entity_item in entities: # Renamed to avoid conflict
                                     # Using .get for safety, though the skill should provide these
-                                    entity_id_str = entity.get('entity_id', 'Unknown ID')
-                                    friendly_name_str = entity.get('friendly_name', entity_id_str) # Default to ID if no friendly name
+                                    entity_id_str = entity_item.get('entity_id', 'Unknown ID')
+                                    friendly_name_str = entity_item.get('friendly_name', entity_id_str) # Default to ID if no friendly name
                                     if friendly_name_str != entity_id_str:
                                         entity_list_str.append(f"{entity_id_str} ({friendly_name_str})")
                                     else:
@@ -349,8 +387,39 @@ class LLMEngine:
                             return "Pathos: Sorry, I encountered an error trying to list entities from Home Assistant."
                     else:
                         return f"Pathos: Unknown Home Assistant action: '{action}'."
+
+                elif isinstance(data, dict) and data.get("tool_name") == "weather":
+                    print(f"LLMEngine: Detected Weather tool call: {data}")
+                    action = data.get("action")
+
+                    if not self.weather_skill:
+                        return "Pathos: I want to get weather information, but the WeatherSkill is not available or configured."
+
+                    if action == "get_current_weather":
+                        city = data.get("city")
+                        units = data.get("units", "metric") # Default to metric if not specified
+                        if not city:
+                            return "Pathos: Weather 'get_current_weather' tool call was missing the city."
+
+                        weather_info = self.weather_skill.get_current_weather(city, units)
+                        if weather_info:
+                            temp_unit = "°C" if weather_info['units'] == "metric" else "°F"
+                            wind_speed_unit = "m/s" if weather_info['units'] == "metric" else "mph"
+                            response_str = (
+                                f"Pathos: The current weather in {weather_info['city']}, {weather_info['country']} is: "
+                                f"{weather_info['temperature']}{temp_unit} (feels like {weather_info['feels_like']}{temp_unit}). "
+                                f"Description: {weather_info['description']}. "
+                                f"Humidity: {weather_info['humidity']}%. "
+                                f"Wind speed: {weather_info['wind_speed']} {wind_speed_unit}."
+                            )
+                            return response_str
+                        else:
+                            # The skill's get_current_weather method already prints detailed errors
+                            return f"Pathos: Sorry, I couldn't retrieve the weather information for '{city}'."
+                    else:
+                        return f"Pathos: Unknown Weather action: '{action}'."
                 else:
-                    # Not a HA tool call, or not properly formatted JSON for it. Return original LLM text.
+                    # Not a HA or Weather tool call, or not properly formatted JSON for it. Return original LLM text.
                     return llm_response_content
 
             except json.JSONDecodeError:
@@ -548,5 +617,33 @@ if __name__ == '__main__':
                  print(f"KnowledgeBase collection: N/A (should be initialized)")
     else:
         print("LLMEngine: KnowledgeBase not available or failed to initialize.")
+
+    print("\n--- LLMEngine Weather Skill Test ---")
+    if hasattr(engine, 'weather_skill') and engine.weather_skill:
+        print("LLMEngine has WeatherSkill initialized.")
+        if not engine.weather_skill.api_key or engine.weather_skill.api_key == "YOUR_OPENWEATHERMAP_API_KEY_HERE":
+            print("WeatherSkill API key not configured or is placeholder. Live tests will likely fail or use mocked data if skill handles it.")
+        else:
+            print(f"WeatherSkill API key loaded: {engine.weather_skill.api_key[:4]}...{engine.weather_skill.api_key[-4:]}")
+    else:
+        print("LLMEngine: WeatherSkill not available or failed to initialize.")
+
+    simulated_llm_weather_json = '''
+    {
+      "tool_name": "weather",
+      "action": "get_current_weather",
+      "city": "London",
+      "units": "metric"
+    }
+    '''
+    print(f"\nIf LLM produced: {simulated_llm_weather_json.strip()}")
+    # Conceptual test description:
+    if hasattr(engine, 'weather_skill') and engine.weather_skill:
+        if engine.weather_skill.api_key and engine.weather_skill.api_key != "YOUR_OPENWEATHERMAP_API_KEY_HERE":
+            print("Expected Pathos response (if API key valid & city found): Formatted weather string for London.")
+        else: # API key missing or placeholder
+             print("Expected Pathos response: Error message about API key or failure to retrieve weather (skill should handle this).")
+    else: # Skill not available
+        print("Expected Pathos response: Error message about WeatherSkill not being available.")
 
     print("\nLLMEngine direct execution test complete.")

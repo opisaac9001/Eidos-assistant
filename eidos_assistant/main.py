@@ -264,8 +264,61 @@ def run_assistant():
                                     # print(f"Skipping non-supported file: {file_item}")
                                     skipped_count +=1
                         print(f"Pathos: Directory scan complete. Added {added_count} documents. Skipped/failed {skipped_count} files.")
+                elif command == "/weather":
+                    args_list = args_str.strip().split()
+                    city_parts = []
+                    units = "metric" # Default
+
+                    # Basic parsing for city name and --units flag
+                    # This is a simple parser; more complex libraries like argparse could be used for more robust CLI
+                    idx = 0
+                    while idx < len(args_list):
+                        part = args_list[idx]
+                        if part.lower() == "--units":
+                            if idx + 1 < len(args_list) and args_list[idx+1].lower() in ["imperial", "metric"]:
+                                units = args_list[idx+1].lower()
+                                idx += 1 # Skip next part as it's consumed
+                            else:
+                                # If just --units is provided, or invalid unit, could default or error
+                                # For now, let's assume if --units is there, next should be unit, or it's an error in usage
+                                # However, the initial problem statement implied --units imperial, so let's stick to that simplicity:
+                                # if next part is imperial, set it, otherwise it might be part of city or ignored.
+                                # A better parser would handle this more gracefully.
+                                pass # Handled by the check below if 'imperial' or 'metric' is explicitly found
+                        elif part.lower() == "imperial":
+                            units = "imperial"
+                        elif part.lower() == "metric":
+                            units = "metric" # Allow explicit metric
+                        else:
+                            city_parts.append(part)
+                        idx += 1
+
+                    city_name = " ".join(city_parts)
+
+                    if not city_name:
+                        print("Pathos: Usage: /weather <city_name> [--units imperial|metric]")
+                    elif not engine.weather_skill:
+                        print("Pathos: Weather skill is not available or not configured.")
+                    elif not engine.weather_skill.api_key or engine.weather_skill.api_key == "YOUR_OPENWEATHERMAP_API_KEY_HERE":
+                        print("Pathos: Weather skill API key not configured. Please set OPENWEATHERMAP_API_KEY in your .env file.")
+                    else:
+                        print(f"Pathos: Getting current weather for '{city_name}' (units: {units})...")
+                        weather_data = engine.weather_skill.get_current_weather(city_name, units)
+                        if weather_data:
+                            temp_unit = "°C" if weather_data['units'] == "metric" else "°F"
+                            wind_speed_unit = "m/s" if weather_data['units'] == "metric" else "mph"
+                            output = (
+                                f"Weather in {weather_data['city']}, {weather_data['country']}:\n"
+                                f"  Temperature: {weather_data['temperature']}{temp_unit} (Feels like: {weather_data['feels_like']}{temp_unit})\n"
+                                f"  Condition:   {weather_data['description']}\n"
+                                f"  Humidity:    {weather_data['humidity']}%\n"
+                                f"  Wind Speed:  {weather_data['wind_speed']} {wind_speed_unit}"
+                            )
+                            print(output)
+                        else:
+                            print(f"Pathos: Could not retrieve weather for '{city_name}'. The skill might have logged more details.")
                 else:
-                    print(f"Eidos: Unknown command '{command}'. Try /remember, /recall, /forget, /say, /system_prompt, /listen, /always_listen, /ha_status, /ha_toggle, /ha_list_entities, /kb_add_file, or /kb_add_directory.")
+                    print(f"Eidos: Unknown command '{command}'. Try /remember, /recall, /forget, /say, /system_prompt, /listen, /always_listen, /ha_status, /ha_toggle, /ha_list_entities, /kb_add_file, /kb_add_directory, or /weather.")
                 continue # Skip sending command to LLM
 
             # Only try to get LLM response if client is available

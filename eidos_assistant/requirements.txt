@@ -2,9 +2,10 @@ PyYAML
 openai
 python-dotenv
 requests
-playsound
+# playsound
 pvporcupine
 openai-whisper
 PyAudio
 chromadb
 sentence-transformers
+duckduckgo-search

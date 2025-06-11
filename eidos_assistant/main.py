@@ -317,8 +317,29 @@ def run_assistant():
                             print(output)
                         else:
                             print(f"Pathos: Could not retrieve weather for '{city_name}'. The skill might have logged more details.")
+                elif command == "/search":
+                    search_query = args_str.strip()
+                    if not search_query:
+                        print("Pathos: Usage: /search <your search query>")
+                    elif not engine.web_search_skill:
+                        print("Pathos: Web Search skill is not available.")
+                    else:
+                        print(f"Pathos: Searching the web for: '{search_query}'...")
+                        results = engine.web_search_skill.search(search_query, num_results=5)
+                        if results: # Check if results is not None and not empty
+                            print("Pathos: Web Search Results:")
+                            for i, result in enumerate(results):
+                                print(f"--- Result {i+1} ---")
+                                print(f"  Title: {result.get('title', 'N/A')}")
+                                print(f"  Snippet: {result.get('snippet', 'N/A')}")
+                                print(f"  URL: {result.get('url', 'N/A')}")
+                            print("--- End of Results ---")
+                        elif results == []: # Explicitly check for empty list (no results found)
+                            print("Pathos: No results found for your query.")
+                        else: # Results is None (an error occurred in the skill)
+                            print(f"Pathos: An error occurred while searching for '{search_query}'. Check skill logs.")
                 else:
-                    print(f"Eidos: Unknown command '{command}'. Try /remember, /recall, /forget, /say, /system_prompt, /listen, /always_listen, /ha_status, /ha_toggle, /ha_list_entities, /kb_add_file, /kb_add_directory, or /weather.")
+                    print(f"Eidos: Unknown command '{command}'. Try /remember, /recall, /forget, /say, /system_prompt, /listen, /always_listen, /ha_status, /ha_toggle, /ha_list_entities, /kb_add_file, /kb_add_directory, /weather, or /search.")
                 continue # Skip sending command to LLM
 
             # Only try to get LLM response if client is available
@@ -556,3 +577,78 @@ if __name__ == '__main__':
 
 
     print("\n--- Eidos RAG System Test Complete ---")
+
+
+    print("\n\n--- Starting Eidos WeatherSkill Integration Test ---")
+
+    # LLMEngine (engine) is already initialized from the RAG test.
+    # It would have also initialized WeatherSkill.
+
+    print("\nIMPORTANT: For live weather API calls, ensure OPENWEATHERMAP_API_KEY is set in your .env file.")
+    if not engine.weather_skill:
+        print("FATAL: WeatherSkill not initialized in LLMEngine. Cannot proceed with WeatherSkill tests.")
+        sys.exit(1)
+
+    if not engine.weather_skill.api_key or engine.weather_skill.api_key == "YOUR_OPENWEATHERMAP_API_KEY_HERE":
+        print("WARNING: WeatherSkill API key not configured. Live API calls will fail.")
+    else:
+        print(f"WeatherSkill API key found: {engine.weather_skill.api_key[:4]}...{engine.weather_skill.api_key[-4:]}")
+
+    def print_formatted_weather(weather_data):
+        if not weather_data:
+            print("No weather data to format or an error occurred.")
+            return
+        temp_unit = "°C" if weather_data.get('units') == "metric" else "°F"
+        wind_speed_unit = "m/s" if weather_data.get('units') == "metric" else "mph"
+        output = (
+            f"Weather in {weather_data.get('city', 'N/A')}, {weather_data.get('country', 'N/A')}:\n"
+            f"  Temperature: {weather_data.get('temperature', 'N/A')}{temp_unit} (Feels like: {weather_data.get('feels_like', 'N/A')}{temp_unit})\n"
+            f"  Condition:   {weather_data.get('description', 'N/A')}\n"
+            f"  Humidity:    {weather_data.get('humidity', 'N/A')}%\n"
+            f"  Wind Speed:  {weather_data.get('wind_speed', 'N/A')} {wind_speed_unit}"
+        )
+        print(output)
+
+    # --- Direct Skill Invocation Tests ---
+    print("\n--- Testing Direct Skill Invocation ---")
+
+    print("\n--- Test Case 1: /weather London ---")
+    weather_data_london = engine.weather_skill.get_current_weather("London", "metric")
+    print_formatted_weather(weather_data_london)
+    if not weather_data_london:
+         print("(Failed to get weather for London - check API key or network if this was unexpected)")
+
+
+    print("\n--- Test Case 2: /weather \"New York\" --units imperial ---")
+    weather_data_ny = engine.weather_skill.get_current_weather("New York", "imperial")
+    print_formatted_weather(weather_data_ny)
+    if not weather_data_ny:
+        print("(Failed to get weather for New York - check API key or network if this was unexpected)")
+
+    print("\n--- Test Case 3: /weather InvalidCityName123 ---")
+    weather_data_invalid = engine.weather_skill.get_current_weather("InvalidCityName123", "metric")
+    if weather_data_invalid:
+        print_formatted_weather(weather_data_invalid) # Should ideally not happen
+    else:
+        print("Correctly failed or could not get weather for InvalidCityName123 (skill should have printed error).")
+
+    # --- LLM Integration Tests (Simulating LLM JSON output) ---
+    print("\n--- Testing LLM Integration (Simulated LLM JSON) ---")
+
+    if not engine.client:
+        print("\nWARNING: LLM client (OpenAI client) not initialized in LLMEngine. ")
+        print("Simulated LLM JSON tests will still run the skill logic, but a real LLM query would fail.")
+
+    print("\n--- Test Case 4: LLM Query - Weather in Berlin (metric) ---")
+    simulated_llm_output_berlin = '{"tool_name": "weather", "action": "get_current_weather", "city": "Berlin", "units": "metric"}'
+    print(f"Simulating LLM output: {simulated_llm_output_berlin}")
+    response_berlin = engine.get_response(simulated_llm_output_berlin)
+    print(f"Pathos response: {response_berlin}")
+
+    print("\n--- Test Case 5: LLM Query - Weather in Phoenix (imperial) ---")
+    simulated_llm_output_phoenix = '{"tool_name": "weather", "action": "get_current_weather", "city": "Phoenix", "units": "imperial"}'
+    print(f"Simulating LLM output: {simulated_llm_output_phoenix}")
+    response_phoenix = engine.get_response(simulated_llm_output_phoenix)
+    print(f"Pathos response: {response_phoenix}")
+
+    print("\n--- Eidos WeatherSkill Integration Test Complete ---")

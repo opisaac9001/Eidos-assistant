@@ -28,14 +28,17 @@ try:
     if skills_dir_path not in sys.path:
         sys.path.insert(0, skills_dir_path) # Insert at beginning for priority
     from home_assistant_skill import HomeAssistantSkill
-    from weather_skill import WeatherSkill # Added WeatherSkill import
+    from weather_skill import WeatherSkill
+    from web_search_skill import WebSearchSkill # Added WebSearchSkill import
 except ImportError as e:
     # Updated error message to reflect multiple possible missing skills
-    print(f"LLMEngine Critical Error: Could not import one or more skill modules (HomeAssistantSkill, WeatherSkill). Ensure skills are in the correct path: {e}")
-    if 'HomeAssistantSkill' not in locals(): # Check if specific import failed
+    print(f"LLMEngine Critical Error: Could not import one or more skill modules (HomeAssistantSkill, WeatherSkill, WebSearchSkill). Ensure skills are in the correct path: {e}")
+    if 'HomeAssistantSkill' not in locals():
         HomeAssistantSkill = None
-    if 'WeatherSkill' not in locals(): # Check if specific import failed
+    if 'WeatherSkill' not in locals():
         WeatherSkill = None
+    if 'WebSearchSkill' not in locals():
+        WebSearchSkill = None
 
 # Attempt to import KnowledgeBase from the same directory (core)
 try:
@@ -140,6 +143,20 @@ class LLMEngine:
         else:
             print("LLMEngine Error: WeatherSkill class not available due to import failure. Weather features disabled.")
 
+        # Initialize WebSearchSkill
+        print("LLMEngine: Initializing WebSearchSkill...")
+        self.web_search_skill = None
+        if WebSearchSkill: # Check if import was successful
+            try:
+                self.web_search_skill = WebSearchSkill()
+                # WebSearchSkill __init__ prints its own status
+                print("LLMEngine: WebSearchSkill initialized.")
+            except Exception as e:
+                print(f"LLMEngine Error: Failed to initialize WebSearchSkill: {e}. Web search features will be unavailable.")
+                self.web_search_skill = None
+        else:
+            print("LLMEngine Error: WebSearchSkill class not available due to import failure. Web search features disabled.")
+
     def _construct_system_prompt(self) -> str:
         """Constructs the system prompt based on the loaded persona and memory."""
         prompt_parts = []
@@ -232,6 +249,19 @@ class LLMEngine:
         prompt_parts.append("You: {\"tool_name\": \"weather\", \"action\": \"get_current_weather\", \"city\": \"Phoenix\", \"units\": \"imperial\"}")
         prompt_parts.append("If the request is NOT about current weather, respond normally.")
         prompt_parts.append("--- End Weather Information ---")
+
+        # Web Search Tool Instructions
+        prompt_parts.append("\n\n--- Web Search ---")
+        prompt_parts.append("If you need to find current information or information not in your training data or local knowledge base, you can request a web search. Respond ONLY with a JSON object in the following format:")
+        prompt_parts.append("{")
+        prompt_parts.append("  \"tool_name\": \"web_search\",")
+        prompt_parts.append("  \"action\": \"search\",")
+        prompt_parts.append("  \"query\": \"<your_search_query_string>\"") # Corrected trailing quote
+        prompt_parts.append("}")
+        prompt_parts.append("\nExample: User: \"What is the latest news about Project Gemini?\"")
+        prompt_parts.append("You: {\"tool_name\": \"web_search\", \"action\": \"search\", \"query\": \"latest news Project Gemini\"}")
+        prompt_parts.append("After the search results are provided, you will be asked to synthesize an answer based on them.")
+        prompt_parts.append("--- End Web Search ---")
 
         return " ".join(prompt_parts).strip()
 
@@ -418,8 +448,65 @@ class LLMEngine:
                             return f"Pathos: Sorry, I couldn't retrieve the weather information for '{city}'."
                     else:
                         return f"Pathos: Unknown Weather action: '{action}'."
+
+                elif isinstance(data, dict) and data.get("tool_name") == "web_search":
+                    print(f"LLMEngine: Detected Web Search tool call: {data}")
+                    action = data.get("action")
+                    assistant_name_prefix = f"{self.get_persona_attribute('identity.name') or 'Pathos'}: " # Get assistant name for responses
+
+                    if not self.web_search_skill:
+                        return f"{assistant_name_prefix}I want to search the web, but the WebSearchSkill is not available."
+
+                    if action == "search":
+                        search_query = data.get("query")
+                        if not search_query:
+                            return f"{assistant_name_prefix}Web 'search' tool call was missing the search query."
+
+                        print(f"LLMEngine: Performing web search for: '{search_query}'...")
+                        # Using num_results=3 as a sensible default for LLM context
+                        search_results = self.web_search_skill.search(search_query, num_results=3)
+
+                        if search_results is None: # Error occurred during search
+                             return f"{assistant_name_prefix}I encountered an error while trying to search the web for '{search_query}'."
+                        if not search_results: # Empty list, no results found
+                            return f"{assistant_name_prefix}I searched the web for '{search_query}', but couldn't find any relevant results."
+
+                        # Format results for synthesis
+                        formatted_results_for_synthesis = "\n\n".join([
+                            f"Title: {res['title']}\nSnippet: {res['snippet']}\nURL: {res['url']}"
+                            for res in search_results
+                        ])
+
+                        # Prepare prompt for LLM to synthesize an answer from search results
+                        # user_input here is the original user query that triggered the web_search tool call.
+                        synthesis_prompt_content = (
+                            f"User's original question: '{user_input}'\n\n"
+                            f"I have performed a web search and found the following information:\n--- Search Results ---\n{formatted_results_for_synthesis}\n--- End Search Results ---\n\n"
+                            "Please synthesize a comprehensive answer to the user's original question based ONLY on these search results. "
+                            "Do not use your general knowledge unless the search results are insufficient or empty. "
+                            "If the results are irrelevant or don't help answer the question, say so."
+                        )
+
+                        print(f"LLMEngine: Synthesizing answer from web search results for original query: '{user_input[:50]}...'")
+
+                        # Make a second LLM call for synthesis
+                        synthesis_messages = [
+                            {"role": "system", "content": self.system_prompt},
+                            {"role": "user", "content": synthesis_prompt_content}
+                        ]
+                        try:
+                            synthesis_completion = self.client.chat.completions.create(
+                                model="local-model", messages=synthesis_messages, temperature=0.7
+                            )
+                            synthesized_answer = synthesis_completion.choices[0].message.content.strip()
+                            return f"{assistant_name_prefix}{synthesized_answer}"
+                        except Exception as e:
+                            print(f"LLMEngine: Error during synthesis LLM call: {e}")
+                            return f"{assistant_name_prefix}I found some information, but had trouble processing it to form an answer."
+                    else:
+                        return f"{assistant_name_prefix}Unknown Web Search action: '{action}'."
                 else:
-                    # Not a HA or Weather tool call, or not properly formatted JSON for it. Return original LLM text.
+                    # Not a HA, Weather, or Web Search tool call, or not properly formatted JSON for it. Return original LLM text.
                     return llm_response_content
 
             except json.JSONDecodeError:
@@ -645,5 +732,26 @@ if __name__ == '__main__':
              print("Expected Pathos response: Error message about API key or failure to retrieve weather (skill should handle this).")
     else: # Skill not available
         print("Expected Pathos response: Error message about WeatherSkill not being available.")
+
+    print("\n--- LLMEngine WebSearch Skill Test (Conceptual) ---")
+    if hasattr(engine, 'web_search_skill') and engine.web_search_skill:
+        print("LLMEngine has WebSearchSkill initialized.")
+    else:
+        print("LLMEngine: WebSearchSkill not available or failed to initialize.")
+
+    simulated_llm_web_search_json = '''
+    {
+      "tool_name": "web_search",
+      "action": "search",
+      "query": "latest AI advancements"
+    }
+    '''
+    print(f"\nIf LLM produced: {simulated_llm_web_search_json.strip()}")
+    if hasattr(engine, 'web_search_skill') and engine.web_search_skill:
+        print("Expected Pathos behavior: Perform web search, then make a second LLM call to synthesize results, then return synthesized answer.")
+        print("(Actual search and synthesis would require live calls and a running LLM for the second step).")
+    else:
+        print("Expected Pathos response: Error message about WebSearchSkill not being available.")
+
 
     print("\nLLMEngine direct execution test complete.")

@@ -8,6 +8,7 @@ import pyaudio # For microphone input
 import wave    # For saving recorded audio for STT
 import struct  # For converting audio bytes to int16 samples
 import time    # For STT recording duration
+import subprocess # For ffmpeg check in speech_to_text
 
 
 # Construct path to .env in the eidos_assistant/ directory
@@ -18,169 +19,227 @@ if not load_dotenv(dotenv_path=dotenv_path):
 else:
     print(f"Debug: voice_io.py - Successfully loaded .env file from {dotenv_path}")
 
+try:
+    import pyttsx3
+except ImportError:
+    print("VoiceIO Warning: pyttsx3 library not found. Local TTS via pyttsx3 will be unavailable.")
+    pyttsx3 = None # Ensure pyttsx3 is defined so checks don't break if not installed
+
 
 class VoiceIO:
     def __init__(self):
-        """Initializes the VoiceIO system, configured for Kokoro TTS via OpenAI API."""
-        self.kokoro_base_url = os.getenv("KOKORO_TTS_BASE_URL", "http://localhost:8880/v1")
-        self.kokoro_api_key = os.getenv("KOKORO_TTS_API_KEY", "not-needed")
-        self.default_voice = os.getenv("KOKORO_TTS_VOICE", "af_sky")
+        """Initializes the VoiceIO system, configured for selected TTS engine."""
+        self.tts_engine_type = os.getenv("TTS_ENGINE", "kokoro").lower()
+        self.pyttsx3_engine = None
+        self.tts_client = None # For Kokoro
 
-        print(f"VoiceIO Initializing with TTS URL: {self.kokoro_base_url}, Default Voice: {self.default_voice}")
+        if self.tts_engine_type == "kokoro":
+            self.kokoro_base_url = os.getenv("KOKORO_TTS_BASE_URL", "http://localhost:8880/v1")
+            self.kokoro_api_key = os.getenv("KOKORO_TTS_API_KEY", "not-needed")
+            self.default_voice = os.getenv("KOKORO_TTS_VOICE", "af_sky")
+            print(f"VoiceIO: Initializing TTS engine: Kokoro (URL: {self.kokoro_base_url}, Default Voice: {self.default_voice})")
+            try:
+                self.tts_client = OpenAI(base_url=self.kokoro_base_url, api_key=self.kokoro_api_key)
+                print("VoiceIO: OpenAI client for Kokoro TTS initialized successfully.")
+            except Exception as e:
+                self.tts_client = None
+                print(f"VoiceIO Error: Failed to initialize OpenAI client for Kokoro TTS: {e}")
+        elif self.tts_engine_type == "local_pyttsx3":
+            print(f"VoiceIO: Initializing TTS engine: local_pyttsx3")
+            if pyttsx3:
+                try:
+                    self.pyttsx3_engine = pyttsx3.init()
+                    if self.pyttsx3_engine:
+                         print("VoiceIO: pyttsx3 engine initialized successfully.")
+                    else:
+                         print("VoiceIO Error: pyttsx3.init() returned None. Cannot use local_pyttsx3.")
+                except Exception as e:
+                    self.pyttsx3_engine = None
+                    print(f"VoiceIO Error: Failed to initialize pyttsx3 engine: {e}")
+                    print("  Ensure prerequisites for pyttsx3 are met (e.g., espeak on Linux).")
+            else:
+                print("VoiceIO Error: pyttsx3 library was not imported. Cannot use 'local_pyttsx3' engine.")
+        else:
+            print(f"VoiceIO Warning: Unknown TTS_ENGINE type '{self.tts_engine_type}'. No TTS will be active.")
 
-        try:
-            self.tts_client = OpenAI(base_url=self.kokoro_base_url, api_key=self.kokoro_api_key)
-            print("VoiceIO: OpenAI client for TTS initialized successfully.")
-        except Exception as e:
-            self.tts_client = None
-            print(f"VoiceIO Error: Failed to initialize OpenAI client for TTS: {e}")
-
+        # STT Initialization (remains the same)
         print("VoiceIO: Initializing STT (Whisper)...")
         try:
-            # For faster loading and CPU usage, using a small English-only model.
-            # Other models: "tiny.en", "tiny", "base", "small.en", "small", "medium.en", "medium", "large"
-            self.stt_model_name = "base.en"
+            # Consider making self.stt_model_name configurable via .env
+            self.stt_model_name = os.getenv("WHISPER_MODEL_NAME", "base.en")
+            print(f"VoiceIO: Attempting to load Whisper STT model '{self.stt_model_name}'...")
             self.stt_model = whisper.load_model(self.stt_model_name)
             print(f"VoiceIO: Whisper STT model '{self.stt_model_name}' loaded successfully.")
-        except Exception as e:
+        except ImportError: # Specifically catch if whisper is not installed
+            self.stt_model = None
+            print("VoiceIO Error: 'openai-whisper' library not found. Please install it (e.g., pip install openai-whisper).")
+            print("STT functionality will be unavailable.")
+        except Exception as e: # Catch other errors like model download issues, torch issues
             self.stt_model = None
             print(f"VoiceIO Error: Failed to load Whisper STT model '{self.stt_model_name}': {e}")
-            print("STT functionality will be unavailable. Ensure ffmpeg is installed and model files can be downloaded by Whisper.")
-        # Ensure self.stt_model is defined even if all try-excepts were somehow bypassed, though unlikely
-        if not hasattr(self, 'stt_model'):
+            print("This could be due to issues with 'torch', 'ffmpeg' not being installed, or problems downloading model files.")
+            print("STT functionality will be unavailable.")
+        # Ensure self.stt_model is defined.
+        if not hasattr(self, 'stt_model'): # Should be redundant now but safe.
             self.stt_model = None
 
+
+        # --- Porcupine Initialization ---
         print("VoiceIO: Attempting to initialize Porcupine Wake Word Engine...")
         self.porcupine = None
-        self.porcupine_frame_length = None
-        self.porcupine_keywords_list = [] # To store the actual keywords being used
+        self.porcupine_frame_length = None # Will be set by Porcupine if successful
+        self.porcupine_keywords_list = []  # To store the actual keywords being used for logging/display
+        self.picovoice_access_key = os.getenv("PICOVOICE_ACCESS_KEY") # Store for validation checks
+        self.porcupine_builtin_keywords = os.getenv("PORCUPINE_BUILTIN_KEYWORDS", "picovoice")
+        self.porcupine_keyword_paths_str = os.getenv("PORCUPINE_KEYWORD_PATHS", "")
+        self.porcupine_model_path = os.getenv("PORCUPINE_MODEL_PATH", None) # Already correctly defaults to None
+        self.porcupine_sensitivities_str = os.getenv("PORCUPINE_SENSITIVITIES", "")
+
 
         try:
-            access_key = os.getenv("PICOVOICE_ACCESS_KEY")
-            if not access_key or access_key == "YOUR_PICOVOICE_ACCESS_KEY_HERE":
-                print("VoiceIO Warning: PICOVOICE_ACCESS_KEY not set in .env or is placeholder. Porcupine will not initialize.")
-                raise ValueError("Missing PICOVOICE_ACCESS_KEY")
-
-            builtin_keywords_str = os.getenv("PORCUPINE_BUILTIN_KEYWORDS", "picovoice") # Default to 'picovoice'
-            keyword_paths_str = os.getenv("PORCUPINE_KEYWORD_PATHS", "")
-            model_path_str = os.getenv("PORCUPINE_MODEL_PATH", None) # Defaults to None for standard English model
-            sensitivities_str = os.getenv("PORCUPINE_SENSITIVITIES", "")
+            if not self.picovoice_access_key or self.picovoice_access_key == "YOUR_PICOVOICE_ACCESS_KEY_HERE":
+                print("VoiceIO Warning: PICOVOICE_ACCESS_KEY not set in .env or is a placeholder. Porcupine will not initialize.")
+                raise ValueError("Missing or placeholder PICOVOICE_ACCESS_KEY")
 
             keywords = []
-            if builtin_keywords_str:
-                keywords.extend([k.strip() for k in builtin_keywords_str.split(',') if k.strip()])
+            if self.porcupine_builtin_keywords:
+                keywords.extend([k.strip() for k in self.porcupine_builtin_keywords.split(',') if k.strip()])
 
-            keyword_paths = []
-            if keyword_paths_str:
-                keyword_paths.extend([p.strip() for p in keyword_paths_str.split(',') if p.strip()])
+            # Store parsed paths for validation, even if some don't exist yet.
+            self.porcupine_keyword_paths = []
+            if self.porcupine_keyword_paths_str:
+                 self.porcupine_keyword_paths.extend([p.strip() for p in self.porcupine_keyword_paths_str.split(',') if p.strip()])
 
-            if not keywords and not keyword_paths:
+
+            if not keywords and not self.porcupine_keyword_paths:
                 print("VoiceIO Warning: No built-in keywords or keyword_paths provided for Porcupine. Porcupine will not initialize.")
                 raise ValueError("No keywords or keyword_paths for Porcupine")
 
-            self.porcupine_keywords_list = keywords + [os.path.basename(p) for p in keyword_paths] # Store for reference
+            # Used for display and sensitivity matching
+            current_keyword_identifiers = keywords + [os.path.basename(p) for p in self.porcupine_keyword_paths]
+
 
             sensitivities = None
-            if sensitivities_str:
+            if self.porcupine_sensitivities_str:
                 try:
-                    sensitivities = [float(s.strip()) for s in sensitivities_str.split(',') if s.strip()]
-                    if len(sensitivities) != (len(keywords) + len(keyword_paths)):
-                        print(f"VoiceIO Warning: Number of sensitivities ({len(sensitivities)}) does not match number of keywords ({len(keywords) + len(keyword_paths)}). Using default sensitivities.")
+                    sensitivities = [float(s.strip()) for s in self.porcupine_sensitivities_str.split(',') if s.strip()]
+                    if len(sensitivities) != len(current_keyword_identifiers):
+                        print(f"VoiceIO Warning: Number of sensitivities ({len(sensitivities)}) does not match number of keywords ({len(current_keyword_identifiers)}). Using default sensitivities.")
                         sensitivities = None
                 except ValueError:
                     print("VoiceIO Warning: Invalid format for PORCUPINE_SENSITIVITIES. Using default sensitivities.")
                     sensitivities = None
 
-            init_args = {"access_key": access_key}
-            if keywords: # pvporcupine uses 'keywords' for built-in
+            init_args = {"access_key": self.picovoice_access_key}
+            if keywords:
                 init_args["keywords"] = keywords
-            if keyword_paths: # and 'keyword_paths' for custom .ppn files
-                init_args["keyword_paths"] = keyword_paths
-            if model_path_str and model_path_str.strip(): # Only add if provided and not empty
-                init_args["model_path"] = model_path_str.strip()
+            if self.porcupine_keyword_paths: # Use the parsed list
+                init_args["keyword_paths"] = self.porcupine_keyword_paths
+            if self.porcupine_model_path and self.porcupine_model_path.strip():
+                init_args["model_path"] = self.porcupine_model_path.strip()
             if sensitivities:
                 init_args["sensitivities"] = sensitivities
 
+            # Actual initialization
             self.porcupine = pvporcupine.create(**init_args)
             self.porcupine_frame_length = self.porcupine.frame_length
+            self.porcupine_keywords_list = current_keyword_identifiers # Store the ones actually used
             print(f"VoiceIO: Porcupine initialized successfully with keywords: {self.porcupine_keywords_list}, frame_length: {self.porcupine_frame_length}.")
 
         except ImportError:
-            print("VoiceIO Error: pvporcupine library not found. Wake word detection will be unavailable.")
-            print("Please ensure 'pvporcupine' is installed in your environment.")
-        except pvporcupine.PorcupineError as pe: # Catch specific Porcupine errors
-            print(f"VoiceIO Error: Porcupine engine error: {pe}")
-            print("This could be due to an invalid AccessKey, model file issues, or other configuration problems.")
-        except ValueError as ve: # Catch our own ValueErrors for config issues
+            print("VoiceIO Error: 'pvporcupine' library not found. Please install it (e.g., pip install pvporcupine). Wake word detection will be unavailable.")
+        except pvporcupine.PorcupineError as pe:
+            print(f"VoiceIO Error: Porcupine engine error: {pe}. This could be due to an invalid AccessKey, missing/corrupt model or keyword files, or incorrect audio device settings.")
+        except ValueError as ve: # For our config checks
             print(f"VoiceIO Error: Porcupine configuration error: {ve}")
-        except Exception as e:
-            print(f"VoiceIO Error: Failed to initialize Porcupine: {e}")
-            print("Wake word detection will be unavailable.")
+        except Exception as e: # Catch-all for other unexpected init errors
+            print(f"VoiceIO Error: Failed to initialize Porcupine: {e}. Wake word detection will be unavailable.")
+            # self.porcupine remains None
 
-        # PyAudio attributes
+        # --- PyAudio Attributes & Initialization ---
         self.pyaudio_instance = None
         self.audio_stream = None
         self.audio_stream_sample_rate = 16000 # Standard for Porcupine/Whisper
         self.audio_stream_channels = 1 # Mono
         # self.porcupine_frame_length should be set if Porcupine initialized successfully
         # If not, audio streaming for wake word won't work properly.
-        self.audio_chunk_size = getattr(self.porcupine, 'frame_length', 512) # Default to 512 if not set by Porcupine
+        self.audio_chunk_size = getattr(self.porcupine, 'frame_length', 512)
 
 
     def start_audio_stream(self) -> bool:
         """Initializes PyAudio and opens an audio input stream."""
-        if not self.porcupine: # Porcupine needed for frame_length to ensure compatibility
-            print("VoiceIO Error: Porcupine not initialized. Cannot determine audio frame length for stream.")
-            # Fallback or error, for now let's error out if we intended to use it with Porcupine
-            # If a generic stream is needed without porcupine, this check could be removed or conditional.
+        if not self.porcupine: # Porcupine is essential for frame_length
+            print("VoiceIO Error: Porcupine not initialized. Cannot start audio stream as frame length is unknown for wake word detection.")
             return False
         if self.audio_stream and self.audio_stream.is_active():
-            print("VoiceIO Info: Audio stream already active.")
+            print("VoiceIO Info: Audio stream is already active.")
             return True
+
+        print("VoiceIO: Initializing PyAudio to open audio stream...")
         try:
-            self.pyaudio_instance = pyaudio.PyAudio()
+            self.pyaudio_instance = pyaudio.PyAudio() # Initialize PyAudio
             self.audio_stream = self.pyaudio_instance.open(
-                format=pyaudio.paInt16,
+                format=pyaudio.paInt16, # Standard format for voice
                 channels=self.audio_stream_channels,
                 rate=self.audio_stream_sample_rate,
-                input=True,
-                frames_per_buffer=self.audio_chunk_size # Use Porcupine's frame length
+                input=True, # We are recording
+                frames_per_buffer=self.audio_chunk_size # Critical for Porcupine
             )
-            print(f"VoiceIO: Audio stream started. Format: paInt16, Rate: {self.audio_stream_sample_rate}, Channels: {self.audio_stream_channels}, Frame Size: {self.audio_chunk_size}")
+            print(f"VoiceIO: Audio stream started successfully (Rate: {self.audio_stream_sample_rate}, Channels: {self.audio_stream_channels}, Chunk: {self.audio_chunk_size}).")
             return True
+        except ImportError:
+            print("VoiceIO Error: PyAudio library not found. Cannot start audio stream. Please install 'PyAudio'.")
+            self.pyaudio_instance = None
+            self.audio_stream = None
+            return False
+        except IOError as ioe:
+            print(f"VoiceIO Error: Failed to open audio stream due to IOError: {ioe}.")
+            print("  This often means no microphone is connected, or PortAudio is misconfigured or missing system libraries (e.g., portaudio19-dev on Linux).")
+            print("  Try running `/validate_setup` or `./setup.sh` for system dependency checks.")
+            if self.pyaudio_instance: self.pyaudio_instance.terminate()
+            self.pyaudio_instance = None
+            self.audio_stream = None
+            return False
         except Exception as e:
-            print(f"VoiceIO Error: Could not start PyAudio stream: {e}")
+            print(f"VoiceIO Error: Could not start PyAudio stream due to an unexpected error: {e}. Check microphone and PortAudio setup.")
+            if self.pyaudio_instance: self.pyaudio_instance.terminate()
             self.pyaudio_instance = None
             self.audio_stream = None
             return False
 
     def read_audio_stream_chunk(self) -> list[int] | None:
-        """Reads a chunk of audio data from the stream, formatted for Porcupine."""
+        """Reads a chunk of audio data from the stream, formatted for Porcupine (list of int16 PCM samples)."""
         if not self.audio_stream or not self.audio_stream.is_active():
-            print("VoiceIO Error: Audio stream not active or not initialized.")
+            # This can be noisy if called repeatedly when stream is intentionally down (e.g., during STT).
+            # print("VoiceIO Info: Audio stream not active or not initialized. Cannot read chunk.")
             return None
         try:
             data_bytes = self.audio_stream.read(self.audio_chunk_size, exception_on_overflow=False)
             num_samples = len(data_bytes) // 2
+            if num_samples * 2 != len(data_bytes):
+                print(f"VoiceIO Warning: Read an incomplete frame. Expected {self.audio_chunk_size*2} bytes, got {len(data_bytes)}.")
+                return None
             pcm_data = struct.unpack('%dh' % num_samples, data_bytes)
             return list(pcm_data)
         except IOError as e:
-            print(f"VoiceIO Error: PyAudio stream read error: {e}")
+            print(f"VoiceIO Error: PyAudio stream read IOError: {e}. The audio device might have been disconnected or encountered an issue.")
+            self.stop_audio_stream() # Attempt to gracefully stop on error
             return None
         except Exception as e:
             print(f"VoiceIO Error: Unexpected error reading audio stream: {e}")
             return None
 
     def stop_audio_stream(self):
-        """Stops and closes the audio stream and terminates PyAudio."""
+        """Stops and closes the audio stream and terminates PyAudio instance if it exists."""
         if self.audio_stream:
             try:
                 if self.audio_stream.is_active():
                     self.audio_stream.stop_stream()
+                    print("VoiceIO: Audio stream stopped.")
                 self.audio_stream.close()
-                print("VoiceIO: Audio stream stopped and closed.")
+                print("VoiceIO: Audio stream closed.")
             except Exception as e:
-                print(f"VoiceIO Error: Exception while stopping/closing audio stream: {e}")
+                print(f"VoiceIO Error: Exception during audio stream stop/close: {e}")
             finally:
                 self.audio_stream = None
 
@@ -189,63 +248,81 @@ class VoiceIO:
                 self.pyaudio_instance.terminate()
                 print("VoiceIO: PyAudio instance terminated.")
             except Exception as e:
-                print(f"VoiceIO Error: Exception while terminating PyAudio instance: {e}")
+                print(f"VoiceIO Error: Exception during PyAudio instance termination: {e}")
             finally:
                 self.pyaudio_instance = None
 
     def record_audio_for_stt(self, duration_seconds: int, temp_filename: str = "temp_stt_audio.wav") -> str | None:
-        """Records audio from the microphone for a specified duration and saves it to a WAV file."""
-        print(f"VoiceIO: Starting {duration_seconds}s audio recording for STT, saving to {temp_filename}...")
+        """
+        Records audio from the microphone for a specified duration and saves it to a WAV file.
+        Returns the absolute path to the saved file on success, None on failure.
+        """
+        print(f"VoiceIO: Starting {duration_seconds}s audio recording for STT, attempting to save to {temp_filename}...")
 
-        record_pa = None
-        record_stream = None
+        try:
+            import pyaudio # Check PyAudio availability
+        except ImportError:
+            print("VoiceIO Error: PyAudio library not found. Cannot record audio for STT. Please install 'PyAudio'.")
+            return None
+
+        record_pa_instance = None
+        record_audio_stream = None
         frames = []
 
         try:
-            record_pa = pyaudio.PyAudio()
-            record_stream = record_pa.open(
+            record_pa_instance = pyaudio.PyAudio()
+            record_audio_stream = record_pa_instance.open(
                 format=pyaudio.paInt16,
                 channels=self.audio_stream_channels,
                 rate=self.audio_stream_sample_rate,
                 input=True,
                 frames_per_buffer=self.audio_chunk_size
             )
-
-            num_chunks_to_record = int((self.audio_stream_sample_rate / self.audio_chunk_size) * duration_seconds)
-            print(f"VoiceIO: Recording {num_chunks_to_record} chunks of size {self.audio_chunk_size}...")
-
-            for _ in range(num_chunks_to_record):
-                data_bytes = record_stream.read(self.audio_chunk_size, exception_on_overflow=False)
-                frames.append(data_bytes)
-
-            print("VoiceIO: Recording finished.")
-
-        except Exception as e:
-            print(f"VoiceIO Error during STT recording: {e}")
+            print("VoiceIO: Microphone stream opened successfully for STT recording.")
+        except IOError as ioe:
+            print(f"VoiceIO Error: Failed to open microphone stream for STT recording due to IOError: {ioe}")
+            print("  Ensure a microphone is connected and permitted, and PortAudio is correctly set up (e.g., portaudio19-dev on Linux).")
+            if record_pa_instance: record_pa_instance.terminate()
             return None
-        finally:
-            if record_stream:
-                record_stream.stop_stream()
-                record_stream.close()
-            if record_pa:
-                record_pa.terminate()
-
-        if not frames:
-            print("VoiceIO Error: No frames recorded for STT.")
+        except Exception as e:
+            print(f"VoiceIO Error: Could not open microphone stream for STT recording: {e}")
+            if record_pa_instance: record_pa_instance.terminate()
             return None
 
         try:
-            # Ensure temp_filename is in a writable directory, e.g., project root for this example
+            num_chunks_to_record = int((self.audio_stream_sample_rate / self.audio_chunk_size) * duration_seconds)
+            print(f"VoiceIO: Recording {num_chunks_to_record} chunks...")
+            for _ in range(num_chunks_to_record):
+                data_bytes = record_audio_stream.read(self.audio_chunk_size, exception_on_overflow=False)
+                frames.append(data_bytes)
+            print("VoiceIO: Recording finished.")
+        except IOError as e:
+            print(f"VoiceIO Error during STT audio recording (read from stream): {e}")
+            return None
+        finally:
+            if record_audio_stream:
+                try:
+                    record_audio_stream.stop_stream()
+                    record_audio_stream.close()
+                except Exception as e_close: print(f"VoiceIO Warning: Error closing STT recording stream: {e_close}")
+            if record_pa_instance:
+                try:
+                    record_pa_instance.terminate()
+                except Exception as e_term: print(f"VoiceIO Warning: Error terminating PyAudio for STT recording: {e_term}")
+
+        if not frames:
+            print("VoiceIO Error: No audio frames recorded for STT.")
+            return None
+
+        try:
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             abs_temp_filename = os.path.join(project_root, temp_filename)
-
-            wf = wave.open(abs_temp_filename, 'wb')
-            wf.setnchannels(self.audio_stream_channels)
-            # Use 2 for sample width (pyaudio.paInt16) if record_pa is already terminated
-            wf.setsampwidth(record_pa.get_sample_size(pyaudio.paInt16) if record_pa and hasattr(record_pa, 'get_sample_size') else 2)
-            wf.setframerate(self.audio_stream_sample_rate)
-            wf.writeframes(b''.join(frames))
-            wf.close()
+            with wave.open(abs_temp_filename, 'wb') as wf:
+                wf.setnchannels(self.audio_stream_channels)
+                # Use PyAudio's method to get sample size for paInt16 (should be 2 bytes)
+                wf.setsampwidth(pyaudio.PyAudio().get_sample_size(pyaudio.paInt16))
+                wf.setframerate(self.audio_stream_sample_rate)
+                wf.writeframes(b''.join(frames))
             print(f"VoiceIO: STT audio successfully saved to {abs_temp_filename}")
             return abs_temp_filename
         except Exception as e:
@@ -255,53 +332,73 @@ class VoiceIO:
     def text_to_speech(self, text: str, voice: str = None, output_filename: str = "eidos_tts_output.mp3") -> bool:
         """
         Converts text to speech using Kokoro-FastAPI (OpenAI compatible) and saves to a file.
-        Returns True on success, False on failure.
+        Returns True on success (speech generated), False on failure.
+        Playback status is printed internally.
         """
-        if not self.tts_client:
-            print("VoiceIO Error: TTS client not initialized. Cannot generate speech.")
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        abs_output_filename = os.path.join(project_root, output_filename)
+        output_dir = os.path.dirname(abs_output_filename)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+
+        tts_generated_successfully = False
+
+        if self.tts_engine_type == "kokoro":
+            if not self.tts_client:
+                print("VoiceIO Error: Kokoro TTS client not initialized. Check TTS server URL/config in your .env file and ensure the TTS server is running.")
+                return False
+            actual_voice = voice if voice else self.default_voice
+            try:
+                print(f"VoiceIO (Kokoro): Requesting TTS for text: '{text[:50]}...' with voice: {actual_voice}")
+                response = self.tts_client.audio.speech.create(
+                    model="kokoro", input=text, voice=actual_voice, response_format="mp3"
+                )
+                response.stream_to_file(abs_output_filename)
+                print(f"VoiceIO (Kokoro): Speech successfully saved to {abs_output_filename}")
+                tts_generated_successfully = True
+            except APIConnectionError as e:
+                print(f"VoiceIO (Kokoro) TTS Error: Failed to connect to API at {self.kokoro_base_url}. Details: {e}")
+                return False
+            except APIStatusError as e:
+                print(f"VoiceIO (Kokoro) TTS Error: API returned an error: Status {e.status_code}, Response: {e.response}. Check server logs and your request.")
+                return False
+            except Exception as e:
+                print(f"VoiceIO (Kokoro) TTS Error: An unexpected error: {e}.")
+                return False
+
+        elif self.tts_engine_type == "local_pyttsx3":
+            if not self.pyttsx3_engine:
+                print("VoiceIO Error: pyttsx3 engine not initialized. Cannot generate speech.")
+                return False
+            try:
+                print(f"VoiceIO (pyttsx3): Requesting TTS for text: '{text[:50]}...'")
+                self.pyttsx3_engine.save_to_file(text, abs_output_filename)
+                self.pyttsx3_engine.runAndWait() # Blocks until speaking/saving is complete
+                print(f"VoiceIO (pyttsx3): Speech successfully saved to {abs_output_filename}")
+                tts_generated_successfully = True
+            except Exception as e:
+                print(f"VoiceIO (pyttsx3) Error: Failed to generate speech: {e}")
+                return False
+        else:
+            print(f"VoiceIO Error: Unknown or uninitialized TTS_ENGINE type '{self.tts_engine_type}'. Cannot generate speech.")
             return False
 
-        actual_voice = voice if voice else self.default_voice
-
-        try:
-            print(f"VoiceIO: Requesting TTS for text: '{text[:50]}...' with voice: {actual_voice}")
-            response = self.tts_client.audio.speech.create(
-                model="kokoro",  # Model name might be ignored by Kokoro-FastAPI but is standard
-                input=text,
-                voice=actual_voice,
-                response_format="mp3"  # Kokoro-FastAPI supports mp3, wav, opus, flac
-            )
-
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            abs_output_filename = os.path.join(project_root, output_filename)
-
-            output_dir = os.path.dirname(abs_output_filename)
-            if output_dir and not os.path.exists(output_dir):
-                os.makedirs(output_dir, exist_ok=True)
-
-            response.stream_to_file(abs_output_filename)
-            print(f"VoiceIO: Speech successfully saved to {abs_output_filename}")
-
-            # Play the sound
+        if tts_generated_successfully:
+            # Play the sound (common to both engines if file saved)
             print(f"VoiceIO: Attempting to play speech from {abs_output_filename}...")
             try:
                 playsound(abs_output_filename)
                 print(f"VoiceIO: Finished playing {abs_output_filename}.")
             except PlaysoundException as pse:
-                print(f"VoiceIO Warning: Error playing speech with playsound: {pse}. Ensure audio codecs (e.g., GStreamer for MP3 on Linux) are installed.")
+                error_msg = f"VoiceIO Warning: Error playing speech with playsound: {pse}."
+                import sys
+                if sys.platform.startswith("linux"):
+                    error_msg += " This might be due to missing GStreamer plugins for MP3 playback on Linux. Please ensure GStreamer and relevant plugins (e.g., good, ugly) are installed."
+                print(error_msg)
             except Exception as e:
                 print(f"VoiceIO Warning: An unexpected error occurred during audio playback: {e}")
+            return True
 
-            return True # TTS Generation was successful
-
-        except APIConnectionError as e:
-            print(f"VoiceIO TTS Error: Failed to connect to Kokoro API at {self.kokoro_base_url}: {e}")
-            return False
-        except APIStatusError as e:
-            print(f"VoiceIO TTS Error: Kokoro API returned an error: Status {e.status_code}, Response: {e.response}")
-            return False
-        except Exception as e: # General error during TTS generation
-            print(f"VoiceIO TTS Error: An unexpected error occurred during TTS generation: {e}")
             return False
 
     def speech_to_text(self, audio_file_path: str) -> str: # Modified to take audio_file_path
@@ -311,25 +408,34 @@ class VoiceIO:
         NOTE: This method is untested by the AI assistant due to environment limitations.
         The user must ensure 'openai-whisper' and 'ffmpeg' are installed.
         """
+        # 1. Check if STT model is loaded
         if not self.stt_model:
-            print("VoiceIO Error: STT model not loaded or failed to initialize. Cannot transcribe audio.")
-            return "[STT Model Not Available]"
+            return "[STT Model Not Loaded: Ensure openai-whisper and its dependencies (like PyTorch) are correctly installed. Check initial startup logs for errors.]"
 
+        # 2. Check for ffmpeg accessibility
+        try:
+            subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, check=True, timeout=5) # Added timeout
+        except FileNotFoundError:
+            return "[STT Error: ffmpeg not found. Please ensure ffmpeg is installed and in your system's PATH.]"
+        except subprocess.TimeoutExpired:
+            return "[STT Error: ffmpeg check timed out. Ensure ffmpeg is responsive.]"
+        except (subprocess.CalledProcessError, Exception) as e: # Catch other ffmpeg related errors
+            return f"[STT Error: ffmpeg found but may be misconfigured or produced an error during version check: {str(e)[:100]}...]"
+
+        # 3. Check if audio file exists
         if not os.path.exists(audio_file_path):
-            print(f"VoiceIO STT Error: Audio file not found at '{audio_file_path}'")
-            return "[Audio File Not Found]"
+            return f"[Audio File Not Found: '{audio_file_path}']"
 
+        # 4. Attempt transcription
         try:
             print(f"VoiceIO: Attempting to transcribe audio from '{audio_file_path}' using Whisper model '{self.stt_model_name}'...")
-            # fp16=False is generally recommended for CPU inference.
-            # If the user has a GPU and CUDA setup, they might change this or use a different device setting.
+            # Consider making fp16 configurable if GPU is available
             result = self.stt_model.transcribe(audio_file_path, fp16=False)
             transcribed_text = result["text"]
             print(f"VoiceIO STT: Transcription complete. Text: '{transcribed_text[:100]}...'")
             return transcribed_text.strip()
         except Exception as e:
-            print(f"VoiceIO STT Error: An error occurred during transcription: {e}")
-            return "[STT Transcription Error]"
+            return f"[STT Transcription Error: {str(e)[:150]}... Check audio file format and Whisper logs.]"
 
     def process_audio_chunk_for_wakeword(self, audio_chunk_pcm: list[int]) -> int:
         """
@@ -340,23 +446,23 @@ class VoiceIO:
         NOTE: This method is untested by the AI assistant. User must ensure correct setup.
         """
         if not self.porcupine:
-            # print("VoiceIO Debug: Porcupine not initialized, skipping wake word processing.") # Can be too noisy
+            # This being printed repeatedly can be noisy if Porcupine intentionally wasn't initialized.
+            # print("VoiceIO Debug: Porcupine not initialized, skipping wake word processing.")
             return -1
 
         if len(audio_chunk_pcm) != self.porcupine_frame_length:
-            print(f"VoiceIO Error: Audio chunk length ({len(audio_chunk_pcm)}) does not match Porcupine frame length ({self.porcupine_frame_length}).")
+            # This is a critical error if it occurs, as Porcupine expects exact frame lengths.
+            print(f"VoiceIO Error: Audio chunk length ({len(audio_chunk_pcm)}) does not match Porcupine frame length ({self.porcupine_frame_length}). Input will be ignored by Porcupine.")
             return -1
 
         try:
             keyword_index = self.porcupine.process(audio_chunk_pcm)
-            # if keyword_index >= 0:
-            #    print(f"VoiceIO Debug: Wake word detected with index: {keyword_index}") # Can be too noisy
-            return keyword_index # Will be -1 if no keyword detected, or 0, 1, ... if detected
+            return keyword_index
         except pvporcupine.PorcupineError as e:
-            print(f"VoiceIO Error: Porcupine process error: {e}")
+            print(f"VoiceIO Error: Porcupine process error during audio processing: {e}. This might indicate an issue with the audio data or Porcupine engine state.")
             return -1
-        except Exception as e:
-            print(f"VoiceIO Error: Unexpected error during Porcupine process: {e}")
+        except Exception as e: # Catch any other unexpected error
+            print(f"VoiceIO Error: Unexpected error during Porcupine.process(): {e}")
             return -1
 
     def delete_porcupine(self):

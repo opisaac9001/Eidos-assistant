@@ -12,12 +12,21 @@ import sys # Added for sys.path manipulation
 # Attempt to load .env, but proceed gracefully if it fails or python-dotenv has issues.
 # The os.getenv calls in __init__ will then rely on system-set env vars or use defaults.
 try:
-    # Using the original robust path construction, hoping it might work once, else defaults will take over.
     dotenv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
     loaded_env = load_dotenv(dotenv_path=dotenv_path)
-    print(f"DEBUG: llm_engine.py - dotenv_path: {dotenv_path}, Loaded .env successfully: {loaded_env}")
+    if loaded_env:
+        print(f"DEBUG: llm_engine.py - Successfully loaded .env file from {dotenv_path}")
+    else:
+        print(f"DEBUG: llm_engine.py - .env file not found at {dotenv_path} or is empty. Relying on system env vars or defaults.")
 except Exception as e:
     print(f"DEBUG: llm_engine.py - Error loading .env file: {e}. Proceeding with defaults or system-set environment variables.")
+
+# Attempt to import Llama from llama_cpp
+try:
+    from llama_cpp import Llama
+except ImportError:
+    print("LLMEngine Warning: llama_cpp library not found. 'local_llama_cpp' engine will be unavailable.")
+    Llama = None # Define Llama as None if import fails
 
 # Dynamically add skills directory to sys.path for importing HomeAssistantSkill
 # This ensures that even if LLMEngine is imported from elsewhere, it can find its skills.
@@ -33,38 +42,65 @@ except ImportError as e:
     HomeAssistantSkill = None # Define as None so type hints/checks for ha_skill don't break if import fails
 
 class LLMEngine:
-    def __init__(self,
-                 persona_config_path="persona_config.yaml",
-                 api_base_url=os.getenv("LLM_API_BASE_URL", "http://localhost:11434/v1"),
-                 api_key=os.getenv("LLM_API_KEY", "NotNeededForOllama")): # Changed default to match .env expectation
+    def __init__(self, persona_config_path="persona_config.yaml"):
         # Construct the absolute path to the persona config file
         base_dir = os.path.dirname(os.path.abspath(__file__)) # core directory
         self.persona_config_path = os.path.join(base_dir, persona_config_path)
         self.persona = None
         self.system_prompt = "You are a helpful AI assistant." # Default prompt
 
-        self.api_base_url = api_base_url
-        self.api_key = api_key
-        self.client = None
+        # Load LLM engine type and specific configurations
+        self.llm_engine_type = os.getenv("LLM_ENGINE_TYPE", "openai").lower()
 
-        try:
-            self.client = OpenAI(base_url=self.api_base_url, api_key=self.api_key)
-            print(f"LLMEngine initialized with API base URL: {self.api_base_url}")
-        except Exception as e:
-            print(f"Error initializing OpenAI client: {e}")
-            # self.client remains None
+        self.client = None      # For OpenAI client
+        self.local_llm = None   # For Llama object
+
+        if self.llm_engine_type == "openai":
+            self.api_base_url = os.getenv("LLM_API_BASE_URL", "http://localhost:11434/v1")
+            self.api_key = os.getenv("LLM_API_KEY", "NotNeededForOllama")
+            self.temperature = float(os.getenv("OPENAI_TEMPERATURE", 0.7))
+            self.max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", 150))
+            try:
+                self.client = OpenAI(base_url=self.api_base_url, api_key=self.api_key)
+                print(f"LLMEngine initialized with OpenAI client. API base URL: {self.api_base_url}")
+            except Exception as e:
+                print(f"Error initializing OpenAI client: {e}")
+        elif self.llm_engine_type == "local_llama_cpp":
+            if Llama is None:
+                print("LLMEngine Error: LLM_ENGINE_TYPE is 'local_llama_cpp', but llama_cpp library failed to import. Local LLM unavailable.")
+            else:
+                self.local_llm_model_path = os.getenv("LOCAL_LLM_MODEL_PATH")
+                self.local_llm_n_gpu_layers = int(os.getenv("LOCAL_LLM_N_GPU_LAYERS", 0))
+                self.local_llm_n_ctx = int(os.getenv("LOCAL_LLM_N_CTX", 2048))
+                self.local_llm_chat_format = os.getenv("LOCAL_LLM_CHAT_FORMAT", None) # Auto-detect if None
+                self.temperature = float(os.getenv("LOCAL_LLM_TEMPERATURE", 0.7)) # Reuse for consistency
+                self.max_tokens = int(os.getenv("LOCAL_LLM_MAX_TOKENS", 150)) # Reuse for consistency
+
+                if not self.local_llm_model_path:
+                    print("LLMEngine Error: LLM_ENGINE_TYPE is 'local_llama_cpp', but LOCAL_LLM_MODEL_PATH is not set in .env.")
+                elif not os.path.exists(self.local_llm_model_path):
+                    print(f"LLMEngine Error: LOCAL_LLM_MODEL_PATH '{self.local_llm_model_path}' does not exist.")
+                else:
+                    try:
+                        print(f"LLMEngine: Initializing Llama model from {self.local_llm_model_path}...")
+                        print(f"  Config: n_gpu_layers={self.local_llm_n_gpu_layers}, n_ctx={self.local_llm_n_ctx}, chat_format='{self.local_llm_chat_format or 'auto'}'")
+                        self.local_llm = Llama(
+                            model_path=self.local_llm_model_path,
+                            n_gpu_layers=self.local_llm_n_gpu_layers,
+                            n_ctx=self.local_llm_n_ctx,
+                            verbose=False # Set to True for more detailed llama.cpp output
+                        )
+                        print("LLMEngine: Llama model initialized successfully.")
+                    except Exception as e:
+                        print(f"LLMEngine Error: Failed to initialize Llama model: {e}")
+                        self.local_llm = None # Ensure it's None on error
+        else:
+            print(f"LLMEngine Warning: Unknown LLM_ENGINE_TYPE '{self.llm_engine_type}'. LLM functionality will be unavailable.")
 
         # Initialize MemoryManager
-        # MemoryManager expects path relative to project root (eidos_assistant/)
         self.memory_manager = MemoryManager(memory_file_path="data/memory.json")
-
-        self.load_persona() # Load persona after client init attempt
-
-        # Construct system prompt after persona and memory are available
-        if self.persona:
-            self.system_prompt = self._construct_system_prompt()
-        else: # Ensure system prompt is constructed even if persona fails but memory might be useful
-             self.system_prompt = self._construct_system_prompt()
+        self.load_persona()
+        self.system_prompt = self._construct_system_prompt() # Construct system prompt after persona and memory
 
         # Initialize HomeAssistantSkill
         print("LLMEngine: Initializing HomeAssistantSkill...")
@@ -178,43 +214,76 @@ class LLMEngine:
 
     def get_response(self, user_input: str) -> str:
         """
-        Generates a response to user input.
-        Currently a placeholder that shows persona attributes and system prompt.
-        Now attempts to connect to an LLM.
+        Generates a response to user input using the configured LLM engine.
         """
-        if not self.client:
-            return "Eidos (error): OpenAI client not initialized. Cannot connect to LLM."
+        assistant_name = self.get_persona_attribute('identity.name') or "Pathos" # Changed default
+        llm_response_content = ""
 
-        assistant_name = self.get_persona_attribute('identity.name') or "Eidos" # Default to Eidos
-        # assistant_tone = self.get_persona_attribute('tone') or "neutral" # Tone is part of system prompt
+        # Construct messages list (common for both engines)
+        # TODO: Implement actual conversation history management
+        messages = [{"role": "system", "content": self.system_prompt}]
+        if conversation_history: # Assuming conversation_history is a list of {"role": ..., "content": ...}
+            messages.extend(conversation_history)
+        messages.append({"role": "user", "content": user_input})
 
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": user_input}
-        ]
+        if self.llm_engine_type == "openai":
+            if not self.client:
+                return f"{assistant_name} (error): OpenAI client not initialized. Cannot connect to LLM."
+            try:
+                completion = self.client.chat.completions.create(
+                    model=os.getenv("OPENAI_MODEL_NAME", "local-model"), # Allow model override via env
+                    messages=messages,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    # stream=False # Add stream=True for streaming if desired later
+                )
+                llm_response_content = completion.choices[0].message.content.strip()
+            except APIConnectionError as e:
+                error_msg = f"Error connecting to OpenAI API at {self.api_base_url}: {e}"
+                print(error_msg)
+                llm_response_content = f"{assistant_name} (error): {error_msg}"
+            except APIStatusError as e:
+                error_msg = f"OpenAI API returned an error: Status {e.status_code}, Response: {e.response}"
+                print(error_msg)
+                llm_response_content = f"{assistant_name} (error): {error_msg}"
+            except Exception as e:
+                error_msg = f"An unexpected error occurred during OpenAI LLM call: {e}"
+                print(error_msg)
+                llm_response_content = f"{assistant_name} (error): {error_msg}"
 
-        try:
-            completion = self.client.chat.completions.create(
-                model="local-model", # Model name is often ignored by local servers but required by API
-                messages=messages,
-                temperature=0.7,
-            )
-            response_content = completion.choices[0].message.content
-            llm_response_content = completion.choices[0].message.content.strip()
-        except APIConnectionError as e:
-            error_msg = f"Error connecting to LLM API at {self.api_base_url}: {e}"
-            print(error_msg)
-            llm_response_content = f"{assistant_name} (error): {error_msg}"
-        except APIStatusError as e:
-            error_msg = f"LLM API returned an error: Status {e.status_code}, Response: {e.response}"
-            print(error_msg)
-            llm_response_content = f"{assistant_name} (error): {error_msg}"
-        except Exception as e:
-            error_msg = f"An unexpected error occurred during LLM call: {e}"
-            print(error_msg)
-            llm_response_content = f"{assistant_name} (error): {error_msg}"
+        elif self.llm_engine_type == "local_llama_cpp":
+            if not self.local_llm:
+                return f"{assistant_name} (error): Llama CPP model not initialized. Cannot generate response."
+            try:
+                # Note: llama-cpp-python's chat_format handling is important.
+                # If self.local_llm_chat_format is None, it tries to auto-detect from model.
+                # If system prompt is part of the model's trained format (e.g. some instruct models),
+                # it might be better to not pass it explicitly here if the model adds it.
+                # For now, we pass it, assuming most general chat models expect it.
+                completion = self.local_llm.create_chat_completion(
+                    messages=messages,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    stop=None,  # Add stop words if needed
+                    stream=False, # Add stream=True for streaming if desired later
+                    # Pass chat_format only if explicitly set, otherwise let llama_cpp try to determine it
+                    **( {"chat_format": self.local_llm_chat_format} if self.local_llm_chat_format else {} )
+                )
+                if completion and completion['choices'] and completion['choices'][0]['message'] and 'content' in completion['choices'][0]['message']:
+                    llm_response_content = completion['choices'][0]['message']['content'].strip()
+                else:
+                    llm_response_content = f"{assistant_name} (error): Received an unexpected response structure from Llama CPP."
+                    print(f"LLMEngine (Llama CPP) unexpected response: {completion}")
 
-        # NEW LOGIC STARTS HERE, processing llm_response_content
+            except Exception as e:
+                error_msg = f"An unexpected error occurred during Llama CPP call: {e}"
+                import traceback
+                traceback.print_exc()
+                llm_response_content = f"{assistant_name} (error): {error_msg}"
+        else:
+            return f"{assistant_name} (error): LLM_ENGINE_TYPE '{self.llm_engine_type}' is not recognized or engine failed to initialize."
+
+        # Tool call processing (remains largely the same, uses llm_response_content)
         if llm_response_content:
             try:
                 cleaned_response_content = llm_response_content

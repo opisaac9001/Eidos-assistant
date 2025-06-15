@@ -37,9 +37,13 @@ try:
     if skills_dir_path not in sys.path:
         sys.path.insert(0, skills_dir_path) # Insert at beginning for priority
     from home_assistant_skill import HomeAssistantSkill
+    from news_skill import NewsSkill
+    from web_search_skill import WebSearchSkill
 except ImportError as e:
-    print(f"LLMEngine Critical Error: Could not import HomeAssistantSkill. Ensure skills module is in the correct path: {e}")
-    HomeAssistantSkill = None # Define as None so type hints/checks for ha_skill don't break if import fails
+    print(f"LLMEngine Critical Error: Could not import one or more skill modules. Ensure 'skills' directory and its contents are correct: {e}")
+    if 'HomeAssistantSkill' not in locals(): HomeAssistantSkill = None
+    if 'NewsSkill' not in locals(): NewsSkill = None
+    if 'WebSearchSkill' not in locals(): WebSearchSkill = None
 
 class LLMEngine:
     def __init__(self, persona_config_path="persona_config.yaml"):
@@ -99,30 +103,71 @@ class LLMEngine:
 
         # Initialize MemoryManager
         self.memory_manager = MemoryManager(memory_file_path="data/memory.json")
-        self.load_persona()
-        self.system_prompt = self._construct_system_prompt() # Construct system prompt after persona and memory
 
-        # Initialize HomeAssistantSkill
-        print("LLMEngine: Initializing HomeAssistantSkill...")
-        self.ha_skill = None # Initialize to None
-        if HomeAssistantSkill: # Check if import was successful
+        # Skill Management
+        self.skills = {} # Dictionary to hold skill instances
+        # Removed direct skill assignments like self.ha_skill, self.news_skill etc.
+        # All skills are now managed via the self.skills dictionary and BaseSkill interface.
+        self._initialize_and_register_skills()
+
+        self.load_persona()
+        self.system_prompt = self._construct_system_prompt() # Construct system prompt after persona, memory, and skills
+
+    def _initialize_and_register_skills(self):
+        """Initializes and registers available skills."""
+        print("LLMEngine: Initializing and registering skills...")
+
+        # HomeAssistantSkill
+        if HomeAssistantSkill:
             try:
-                self.ha_skill = HomeAssistantSkill()
-                if self.ha_skill.ha_token and self.ha_skill.ha_token != "YOUR_LONG_LIVED_ACCESS_TOKEN_HERE":
-                    # Defer check_api_status to when a command is actually run, or user can do it.
-                    # For now, just confirm it loaded.
-                    # if self.ha_skill.check_api_status(): # This makes init slower
-                    # print("LLMEngine: HomeAssistantSkill initialized and API status OK.")
-                    print("LLMEngine: HomeAssistantSkill initialized. Call check_api_status() on HA skill for full check.")
-                    # else:
-                    # print("LLMEngine Warning: HomeAssistantSkill initialized, but API status check failed. HA features may not work.")
+                ha_skill_instance = HomeAssistantSkill()
+                if hasattr(ha_skill_instance, 'is_configured') and ha_skill_instance.is_configured():
+                    self.register_skill(ha_skill_instance)
                 else:
-                    print("LLMEngine Warning: HomeAssistantSkill initialized, but HA token not configured. HA features disabled.")
+                    print("LLMEngine Warning: HomeAssistantSkill not configured (token missing or invalid). Not registered as a usable skill.")
             except Exception as e:
-                print(f"LLMEngine Error: Failed to initialize HomeAssistantSkill instance: {e}. HA features will be unavailable.")
-                self.ha_skill = None # Ensure it's None on error
+                print(f"LLMEngine Error: Failed to initialize or register HomeAssistantSkill: {e}")
         else:
-            print("LLMEngine Error: HomeAssistantSkill class not available due to import failure. HA features disabled.")
+            print("LLMEngine Info: HomeAssistantSkill class not available. Skipping registration.")
+
+        # NewsSkill
+        if NewsSkill:
+            try:
+                news_skill_instance = NewsSkill()
+                self.register_skill(news_skill_instance) # Register using the new method
+                print("LLMEngine: NewsSkill registered.")
+            except Exception as e:
+                print(f"LLMEngine Error: Failed to initialize or register NewsSkill: {e}")
+        else:
+            print("LLMEngine Info: NewsSkill class not available. Skipping registration.")
+
+        if WebSearchSkill: # Check if WebSearchSkill was imported successfully
+            try:
+                web_search_skill_instance = WebSearchSkill()
+                self.register_skill(web_search_skill_instance)
+                print("LLMEngine: WebSearchSkill registered.")
+            except Exception as e:
+                print(f"LLMEngine Error: Failed to initialize or register WebSearchSkill: {e}")
+        else:
+            print("LLMEngine Info: WebSearchSkill class not available. Skipping registration.")
+
+        # TODO: Add other skills here in the future
+
+    def register_skill(self, skill_instance: Any): # Using Any for now, should be BaseSkill
+        """Registers a skill instance if it has a valid tool signature."""
+        if hasattr(skill_instance, 'get_tool_signature'):
+            try:
+                signature = skill_instance.get_tool_signature()
+                tool_name = signature.get("tool_name")
+                if tool_name:
+                    self.skills[tool_name] = skill_instance
+                    print(f"LLMEngine: Skill '{tool_name}' registered successfully.")
+                else:
+                    print(f"LLMEngine Warning: Skill object {type(skill_instance).__name__} has no 'tool_name' in its signature.")
+            except Exception as e:
+                print(f"LLMEngine Error: Could not get tool signature for skill {type(skill_instance).__name__}: {e}")
+        else:
+            print(f"LLMEngine Warning: Skill object {type(skill_instance).__name__} does not have 'get_tool_signature' method.")
 
 
     def _construct_system_prompt(self) -> str:
@@ -162,35 +207,31 @@ class LLMEngine:
         elif user_theme_preference: # If theme known but not user name
              prompt_parts.append(f"The user prefers a {user_theme_preference} theme.")
 
-        # Home Assistant Tool Instructions
-        prompt_parts.append("\n\n--- Home Assistant Control ---")
-        prompt_parts.append("If the user's request is about controlling a smart home device or checking its status, you MUST respond ONLY with a JSON object in the following format. Do not include any other text, explanations, or conversational filler before or after the JSON object.")
-        prompt_parts.append("\nTo call a service (e.g., turn on/off, toggle, set brightness):")
-        prompt_parts.append("{")
-        prompt_parts.append("  \"tool_name\": \"home_assistant\",")
-        prompt_parts.append("  \"action\": \"call_service\",")
-        prompt_parts.append("  \"domain\": \"<domain_of_entity_e.g., light, switch, climate>\",")
-        prompt_parts.append("  \"service\": \"<service_to_call_e.g., turn_on, turn_off, toggle, set_temperature>\",")
-        prompt_parts.append("  \"entity_id\": \"<full_entity_id_e.g., light.living_room_lamp>\",")
-        prompt_parts.append("  \"service_data\": { /* Optional: additional data for the service, e.g., {\"brightness_pct\": 80} or {\"temperature\": 22} */ }")
-        prompt_parts.append("}")
-        prompt_parts.append("\nTo get the state of a device:")
-        prompt_parts.append("{")
-        prompt_parts.append("  \"tool_name\": \"home_assistant\",")
-        prompt_parts.append("  \"action\": \"get_state\",")
-        prompt_parts.append("  \"entity_id\": \"<full_entity_id_e.g., sensor.bedroom_temperature>\" ")
-        prompt_parts.append("}")
-        prompt_parts.append("\nExamples of when to use this JSON format:")
-        prompt_parts.append("User: \"Turn on the kitchen light.\"")
-        prompt_parts.append("You: {\"tool_name\": \"home_assistant\", \"action\": \"call_service\", \"domain\": \"light\", \"service\": \"turn_on\", \"entity_id\": \"light.kitchen_light\", \"service_data\": {}}")
-        prompt_parts.append("User: \"Is the front door locked?\"")
-        prompt_parts.append("You: {\"tool_name\": \"home_assistant\", \"action\": \"get_state\", \"entity_id\": \"lock.front_door\"}")
-        prompt_parts.append("User: \"Set the living room thermostat to 20 degrees.\"")
-        prompt_parts.append("You: {\"tool_name\": \"home_assistant\", \"action\": \"call_service\", \"domain\": \"climate\", \"service\": \"set_temperature\", \"entity_id\": \"climate.living_room\", \"service_data\": {\"temperature\": 20}}")
-        prompt_parts.append("User: \"Toggle the office fan.\"")
-        prompt_parts.append("You: {\"tool_name\": \"home_assistant\", \"action\": \"call_service\", \"domain\": \"switch\", \"service\": \"toggle\", \"entity_id\": \"switch.office_fan\", \"service_data\": {}}")
-        prompt_parts.append("\nIf the request is NOT about Home Assistant, or if you are unsure of the entity_id, domain, or service, respond normally as a helpful assistant without using the JSON format.")
-        prompt_parts.append("--- End Home Assistant Control ---")
+        # Add registered skill/tool signatures to the system prompt
+        if self.skills:
+            prompt_parts.append("\n\n--- Available Tools ---")
+            prompt_parts.append("If the user's request matches one of the following tools, you MUST respond ONLY with a JSON object matching the tool's 'parameters' schema. Do not include any other text, explanations, or conversational filler before or after the JSON object.")
+            prompt_parts.append("Do NOT try to use a tool if the user is just asking about its functionality or how to use it.")
+
+            for tool_name, skill_instance in self.skills.items():
+                # All skills, including home_assistant_control, are now described by their signature.
+                signature = skill_instance.get_tool_signature()
+                prompt_parts.append(f"\nTool: {tool_name}")
+                prompt_parts.append(f"  Description: {signature['description']}")
+                prompt_parts.append("  Parameters (as a JSON object): {")
+                for param in signature.get("parameters", []):
+                    param_type = param.get('type', 'string')
+                    is_required = param.get('required', False)
+                    description = param.get('description', '')
+                    req_str = "REQUIRED" if is_required else "OPTIONAL"
+                    prompt_parts.append(f"    \"{param['name']}\": \"<{param_type}> ({req_str}) {description}\",")
+                # Remove trailing comma from last parameter if any
+                if signature.get("parameters"):
+                    prompt_parts[-1] = prompt_parts[-1].rstrip(',')
+                prompt_parts.append("  }")
+                prompt_parts.append(f"  Example JSON for {tool_name}: {{ \"tool_name\": \"{tool_name}\", \"parameters\": {{...}} }}") # Generic example
+            prompt_parts.append("--- End Available Tools ---")
+
 
         return " ".join(prompt_parts).strip()
 
@@ -294,57 +335,97 @@ class LLMEngine:
 
                 data = json.loads(cleaned_response_content)
 
-                if isinstance(data, dict) and data.get("tool_name") == "home_assistant":
-                    print(f"LLMEngine: Detected Home Assistant tool call: {data}")
-                    action = data.get("action")
-                    entity_id = data.get("entity_id")
+                if isinstance(data, dict) and data.get("tool_name") in self.skills:
+                    tool_name = data["tool_name"]
+                    skill_instance = self.skills[tool_name]
+                    skill_args = data.get("parameters", {})
 
-                    if not self.ha_skill:
-                        return "Pathos: I want to use a Home Assistant skill, but it's not available or configured."
+                    print(f"LLMEngine: Detected call for skill '{tool_name}' with args: {skill_args}")
+                    try:
+                        # Pass the 'action' from skill_args if present (mainly for home_assistant_control)
+                        skill_action = skill_args.get("action") if tool_name == "home_assistant_control" else None
+                        skill_result_data = skill_instance.execute(action=skill_action, args=skill_args)
 
-                    if action == "call_service":
-                        domain = data.get("domain")
-                        service = data.get("service")
-                        service_data_payload = data.get("service_data", {})
+                        if isinstance(skill_result_data, dict) and skill_result_data.get("synthesis_needed"):
+                            print(f"LLMEngine: Skill '{tool_name}' requires synthesis. Preparing follow-up LLM call.")
+                            original_user_query_for_synthesis = skill_result_data.get("original_query_for_synthesis", user_input)
+                            skill_result_content = skill_result_data.get("synthesis_prompt_content", "No content from tool for synthesis.")
 
-                        final_service_data = {"entity_id": entity_id}
-                        if isinstance(service_data_payload, dict):
-                            final_service_data.update(service_data_payload)
+                            synthesis_prompt = (
+                                f"User's original query: \"{original_user_query_for_synthesis}\"\n\n"
+                                f"I have performed an action using the '{tool_name}' tool and found the following information:\n"
+                                f"--- Tool Results ---\n{skill_result_content}\n--- End Tool Results ---\n\n"
+                                f"Based *only* on these tool results and the original query, please provide a concise answer to the user's original query. "
+                                f"Do not use any prior knowledge. If the results do not provide enough information to answer, say so."
+                            )
 
-                        if domain and service and entity_id: # entity_id already included in final_service_data
-                            success = self.ha_skill.call_service(domain, service, final_service_data)
-                            if success:
-                                friendly_service_name = service.replace("_", " ")
-                                return f"Pathos: Okay, I've actioned '{friendly_service_name}' for '{entity_id}'."
+                            print(f"LLMEngine: Synthesis prompt for LLM:\n{synthesis_prompt[:500]}...")
+
+                            synthesis_messages = [
+                                {"role": "system", "content": self.system_prompt},
+                                {"role": "user", "content": synthesis_prompt}
+                            ]
+
+                            if self.llm_engine_type == "openai" and self.client:
+                                synth_completion = self.client.chat.completions.create(
+                                    model=os.getenv("OPENAI_MODEL_NAME", "local-model"),
+                                    messages=synthesis_messages,
+                                    temperature=self.temperature,
+                                    max_tokens=self.max_tokens
+                                )
+                                return synth_completion.choices[0].message.content.strip()
+                            elif self.llm_engine_type == "local_llama_cpp" and self.local_llm:
+                                synth_completion = self.local_llm.create_chat_completion(
+                                    messages=synthesis_messages,
+                                    temperature=self.temperature,
+                                    max_tokens=self.max_tokens,
+                                     **( {"chat_format": self.local_llm_chat_format} if self.local_llm_chat_format else {} )
+                                )
+                                return synth_completion['choices'][0]['message']['content'].strip()
                             else:
-                                return f"Pathos: Sorry, I tried but failed to perform '{service}' on '{entity_id}' via Home Assistant."
+                                return "Pathos: LLM for synthesis not available."
                         else:
-                            return "Pathos: Home Assistant tool call was missing domain, service, or entity_id."
+                            return self._handle_skill_result(tool_name, skill_result_data)
 
-                    elif action == "get_state":
-                        if entity_id:
-                            state_info = self.ha_skill.get_entity_state(entity_id)
-                            if state_info:
-                                current_state = state_info.get('state', 'unknown')
-                                return f"Pathos: According to Home Assistant, '{entity_id}' is currently '{current_state}'."
-                            else:
-                                return f"Pathos: Sorry, I couldn't get the current state for '{entity_id}' from Home Assistant."
-                        else:
-                            return "Pathos: Home Assistant 'get_state' tool call was missing entity_id."
-                    else:
-                        return f"Pathos: Unknown Home Assistant action: '{action}'."
-                else:
-                    # Not a HA tool call, or not properly formatted JSON for it. Return original LLM text.
+                    except Exception as e:
+                        print(f"LLMEngine: Error executing skill '{tool_name}': {e}")
+                        import traceback
+                        traceback.print_exc()
+                        return f"Pathos: I encountered an error trying to use the {tool_name} tool: {e}"
+                else: # Not a recognized JSON tool call.
                     return llm_response_content
 
             except json.JSONDecodeError:
-                # Not JSON, or malformed JSON not intended as a tool call. Return original LLM text.
+                # Not JSON, return original LLM text.
                 return llm_response_content
             except Exception as e:
                 print(f"LLMEngine: Error processing potential tool call: {e}")
                 return f"Pathos: I encountered an issue trying to process that: {e}"
         else:
             return "Pathos: I didn't receive a response from the language model."
+
+    def _handle_skill_result(self, tool_name: str, result: Dict[str, Any]) -> str:
+        """Handles the result from a skill execution for user presentation."""
+        if isinstance(result, dict) and 'error' in result:
+            return f"Pathos: Error using {tool_name}: {result['error']}"
+
+        # Simple conversion to string for now. Can be customized per tool later.
+        # For NewsSkill, this will make the LLM summarize the dictionary of headlines.
+        # Or, the LLM might be instructed by the tool's description to directly use the info.
+        # For now, just returning a summary of the result.
+        # If the LLM is good, it might summarize this dict appropriately.
+        # If not, the system prompt for tools needs to be clearer on how the LLM should use the tool's JSON output.
+        # Current system prompt for tools says "If the user's request matches... respond ONLY with a JSON object..."
+        # This means the LLM *itself* is forming the JSON to call the tool.
+        # The output of tool.execute() is then *given back to the LLM* as the next user message (or part of it).
+        # So, this function's output here is effectively what the LLM sees as the "tool's response".
+        # It should be a string that the LLM can understand and use to form its final answer to the user.
+
+        # Thus, converting the dict to a JSON string is appropriate for the LLM to consume.
+        if isinstance(result, dict):
+            return f"Tool {tool_name} executed and returned: {json.dumps(result)}"
+        else:
+            return f"Tool {tool_name} executed and returned an unexpected format: {result}"
 
 
     def load_persona(self):

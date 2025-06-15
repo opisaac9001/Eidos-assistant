@@ -1,161 +1,216 @@
 import os
 import requests
 from dotenv import load_dotenv
+from typing import Dict, Any, Optional, List
 
-class HomeAssistantSkill:
+from eidos_assistant.skills.base_skill import BaseSkill, ToolSignature, ToolParameter
+
+class HomeAssistantSkill(BaseSkill):
     def __init__(self):
         """
         Initializes the Home Assistant Skill.
         Loads configuration from environment variables.
         """
-        # Load .env file from project root (eidos_assistant/.env)
-        # Assumes this skill file is in eidos_assistant/skills/
+        super().__init__(name="HomeAssistantSkill", version="0.1.0")
         dotenv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
         if not load_dotenv(dotenv_path=dotenv_path):
-            print(f"Warning: HomeAssistantSkill - Could not load .env file from {dotenv_path}")
+            print(f"Warning: {self.name} - Could not load .env file from {dotenv_path}")
         else:
-            print(f"Debug: HomeAssistantSkill - Successfully loaded .env file from {dotenv_path}")
+            print(f"Debug: {self.name} - Successfully loaded .env file from {dotenv_path}")
 
-        self.ha_url = os.getenv("HOME_ASSISTANT_URL", "http://localhost:8123") # Default if not in .env
-        self.ha_token = os.getenv("HOME_ASSISTANT_TOKEN", None)
+        self.ha_url = os.getenv("HOME_ASSISTANT_URL", "http://localhost:8123")
+        self.ha_token = os.getenv("HOME_ASSISTANT_TOKEN")
 
-        self.headers = {
-            "Authorization": f"Bearer {self.ha_token}",
-            "Content-Type": "application/json",
-        }
+        self.headers = {} # Will be set if token is valid
+        self.api_available = False # Set by check_api_status or implicitly by successful calls
 
-        self.api_available = False # Will be set by check_api_status
-
-        if not self.ha_token or self.ha_token == "YOUR_LONG_LIVED_ACCESS_TOKEN_HERE":
-            print("HomeAssistantSkill Warning: HOME_ASSISTANT_TOKEN is not set or is a placeholder.")
-            print("Home Assistant functionality will be disabled.")
+        if not self.ha_token or self.ha_token == "YOUR_LONG_LIVED_ACCESS_TOKEN_HERE" or self.ha_token.strip() == "":
+            print(f"{self.name} Warning: HOME_ASSISTANT_TOKEN is not set, is a placeholder, or empty.")
+            print(f"{self.name}: Home Assistant functionality will be disabled.")
+            self.ha_token = None # Ensure it's None if invalid
         else:
-            # Automatically check API status on init, but don't prevent instantiation
-            # self.api_available = self.check_api_status() # Can be called explicitly later if needed
-            print(f"HomeAssistantSkill Initialized. URL: {self.ha_url}. Token Loaded: {'Yes' if self.ha_token else 'No'}")
-            print("Call check_api_status() to verify connection to Home Assistant.")
+            self.headers = {
+                "Authorization": f"Bearer {self.ha_token}",
+                "Content-Type": "application/json",
+            }
+            print(f"{self.name} Initialized. URL: {self.ha_url}. Token Loaded: Yes")
+            # Defer full API status check to when a command is run or via /validate_setup
+            # self.check_api_status() # Optionally check on init
 
+    def is_configured(self) -> bool:
+        """Checks if the skill has the necessary configuration (token) to operate."""
+        return bool(self.ha_token)
+
+    def _make_request(self, method: str, endpoint: str, json_data: Optional[Dict] = None, timeout: int = 5) -> Optional[Dict[str, Any]]:
+        """Makes an HTTP request to the Home Assistant API."""
+        if not self.is_configured():
+            print(f"{self.name} Error: Skill not configured (token missing). Cannot make request.")
+            return None
+
+        url = f"{self.ha_url.rstrip('/')}/api/{endpoint.lstrip('/')}"
+        try:
+            response = requests.request(method, url, headers=self.headers, json=json_data, timeout=timeout)
+            response.raise_for_status()
+            if response.content:
+                return response.json()
+            return {} # Return empty dict for success with no content (e.g. some service calls)
+        except requests.exceptions.HTTPError as e:
+            print(f"{self.name} HTTP error: {e.response.status_code} for URL {url}. Response: {e.response.text[:200]}")
+            if e.response.status_code == 401:
+                print(f"{self.name} Error: Unauthorized (401). Check your HOME_ASSISTANT_TOKEN.")
+            elif e.response.status_code == 404:
+                print(f"{self.name} Error: Resource not found (404) at {url}.")
+        except requests.exceptions.Timeout:
+            print(f"{self.name} Error: Timeout connecting to {url}.")
+        except requests.exceptions.RequestException as e:
+            print(f"{self.name} Error: Request failed for {url}: {e}")
+        except Exception as e:
+            print(f"{self.name} Error: An unexpected error occurred during request to {url}: {e}")
+        return None
 
     def check_api_status(self) -> bool:
         """
         Checks if the Home Assistant API is running and accessible.
         Returns True if API is okay, False otherwise.
         """
-        if not self.ha_token or self.ha_token == "YOUR_LONG_LIVED_ACCESS_TOKEN_HERE":
-            print("HomeAssistantSkill Error: Cannot check API status, token not configured or is placeholder.")
+        if not self.is_configured():
+            print(f"{self.name} Error: Cannot check API status, skill not configured (token missing).")
             self.api_available = False
             return False
 
-        api_url = f"{self.ha_url.rstrip('/')}/api/"
-        print(f"HomeAssistantSkill: Checking API status at {api_url}...")
+        response_data = self._make_request("GET", "/") # Check base API endpoint
+        if response_data is not None and "message" in response_data: # HA typically returns {"message": "API running."}
+            print(f"{self.name}: API status OK. Message: {response_data['message']}")
+            self.api_available = True
+            return True
+        else:
+            print(f"{self.name}: API status check failed or unexpected response.")
+            self.api_available = False
+            return False
 
-        try:
-            response = requests.get(api_url, headers=self.headers, timeout=5)
-            response.raise_for_status()  # Raises an HTTPError for bad responses (4XX or 5XX)
+    def get_tool_signature(self) -> ToolSignature:
+        return {
+            "tool_name": "home_assistant_control",
+            "description": "Controls and queries Home Assistant entities and services. Requires specifying an action.",
+            "parameters": [
+                {
+                    "name": "action", "type": "string",
+                    "description": "The action to perform. Supported: 'get_state', 'call_service', 'list_entities'.",
+                    "required": True,
+                },
+                {
+                    "name": "entity_id", "type": "string",
+                    "description": "Entity ID (e.g., 'light.living_room'). Required for 'get_state' and often for 'call_service'.",
+                    "required": False,
+                },
+                {
+                    "name": "domain", "type": "string",
+                    "description": "Service domain (e.g., 'light', 'switch'). Required for 'call_service'.",
+                    "required": False,
+                },
+                {
+                    "name": "service", "type": "string",
+                    "description": "Service name (e.g., 'turn_on', 'toggle'). Required for 'call_service'.",
+                    "required": False,
+                },
+                {
+                    "name": "service_data", "type": "object",
+                    "description": "Dictionary for service call data (e.g., {'brightness': 255}). Optional for 'call_service'.",
+                    "required": False,
+                },
+                {
+                    "name": "device_type_filter", "type": "string",
+                    "description": "Filter by device type (e.g., 'light') for 'list_entities'. Optional.",
+                    "required": False,
+                }
+            ]
+        }
 
-            # Check content for expected message if possible, some HA versions might differ slightly
-            # For now, a 200 OK is a good sign.
-            if response.status_code == 200:
-                # Example: response.json() might be {"message": "API running."}
-                # For now, just checking status code is enough.
-                print(f"HomeAssistantSkill: API status OK (HTTP {response.status_code}). Response: {response.text[:100]}...")
-                self.api_available = True
-                return True
+    def execute(self, action_param_ignored: Optional[str] = None, args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        if not self.is_configured():
+            return {"error": "Home Assistant skill is not configured (missing token)."}
+        if args is None:
+            return {"error": "No arguments provided for Home Assistant action."}
+
+        action = args.get("action")
+        if not action:
+            return {"error": "Home Assistant 'action' not specified in arguments."}
+
+        print(f"{self.name}: Executing action '{action}' with args: {args}")
+
+        if action == "get_state":
+            entity_id = args.get("entity_id")
+            if not entity_id: return {"error": "entity_id is required for get_state."}
+            state = self.get_entity_state(entity_id)
+            return state if state is not None else {"error": f"Failed to get state for {entity_id} or entity not found."}
+
+        elif action == "call_service":
+            domain = args.get("domain")
+            service = args.get("service")
+            service_data = args.get("service_data", {})
+            entity_id = args.get("entity_id") # Can be part of service_data or separate
+
+            if not domain or not service:
+                return {"error": "domain and service are required for call_service."}
+
+            # Ensure entity_id from args is in service_data if not already present
+            if entity_id and 'entity_id' not in service_data:
+                service_data['entity_id'] = entity_id
+            elif not entity_id and 'entity_id' not in service_data:
+                 # Some services might not require entity_id (e.g. scene.turn_on if scene_id is in service_data)
+                 # Or some might operate on areas. For now, we'll mostly assume entity_id is common.
+                 # If it's critical and missing, HA will return an error.
+                 pass
+
+
+            success = self.call_service_internal(domain, service, service_data) # Renamed to avoid confusion with old public method
+            if success:
+                return {"success": True, "message": f"Service {domain}.{service} called successfully with data: {service_data}."}
             else:
-                # This case might not be reached if raise_for_status() handles it
-                print(f"HomeAssistantSkill: API status check failed. Status: {response.status_code}, Response: {response.text}")
-                self.api_available = False
-                return False
-        except requests.exceptions.Timeout:
-            print(f"HomeAssistantSkill: API status check timed out for {api_url}.")
-            self.api_available = False
-            return False
-        except requests.exceptions.RequestException as e:
-            print(f"HomeAssistantSkill: Error connecting to Home Assistant API at {api_url}: {e}")
-            self.api_available = False
-            return False
-        except Exception as e:
-            print(f"HomeAssistantSkill: An unexpected error occurred during API status check: {e}")
-            self.api_available = False
-            return False
+                return {"error": f"Failed to call service {domain}.{service} with data: {service_data}."}
 
-    def get_entity_state(self, entity_id: str) -> dict | None:
-        """
-        Retrieves the state of a specific entity from Home Assistant.
-        Returns the entity's state dictionary or None on error.
-        """
-        if not self.api_available and not self.check_api_status(): # Check status if not known to be available
-             print(f"HomeAssistantSkill Error: API not available. Cannot get entity state for {entity_id}.")
-             return None
-        # Re-check token specifically for this action too, in case check_api_status wasn't called or state changed
-        if not self.ha_token or self.ha_token == "YOUR_LONG_LIVED_ACCESS_TOKEN_HERE":
-            print(f"HomeAssistantSkill Error: Token not configured. Cannot get entity state for {entity_id}.")
+        elif action == "list_entities":
+            device_type_filter = args.get("device_type_filter")
+            entities = self.list_entities_internal(device_type_filter=device_type_filter) # Renamed
+            return {"entities": entities if entities is not None else []}
+
+        else:
+            return {"error": f"Unknown Home Assistant action: {action}"}
+
+    # Internal methods that perform the actual API calls
+    def get_entity_state(self, entity_id: str) -> Optional[Dict[str, Any]]:
+        """Internal: Retrieves the state of a specific entity."""
+        print(f"{self.name}: Getting state for entity '{entity_id}'...")
+        return self._make_request("GET", f"states/{entity_id}")
+
+    def call_service_internal(self, domain: str, service: str, service_data: Dict[str, Any]) -> bool:
+        """Internal: Calls a service in Home Assistant."""
+        print(f"{self.name}: Calling service '{domain}.{service}' with data: {service_data}...")
+        response_data = self._make_request("POST", f"services/{domain}/{service}", json_data=service_data, timeout=10)
+        # Successful service calls usually return a list of states changed, or an empty list/dict.
+        # The important part is that _make_request didn't return None (which indicates an error).
+        return response_data is not None
+
+    def list_entities_internal(self, device_type_filter: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+        """Internal: Lists entities, optionally filtered by the part before the dot (domain/device type)."""
+        print(f"{self.name}: Listing entities (filter: {device_type_filter})...")
+        all_states = self._make_request("GET", "states")
+        if all_states is None: # Error occurred in _make_request
             return None
 
-        entity_api_url = f"{self.ha_url.rstrip('/')}/api/states/{entity_id}"
-        print(f"HomeAssistantSkill: Getting state for entity '{entity_id}' from {entity_api_url}...")
+        if not isinstance(all_states, list): # Expect a list of states
+            print(f"{self.name} Error: Unexpected format for /api/states response. Expected list, got {type(all_states)}")
+            return None
 
-        try:
-            response = requests.get(entity_api_url, headers=self.headers, timeout=5)
-            response.raise_for_status()  # Raises an HTTPError for bad responses (4XX or 5XX)
+        if device_type_filter:
+            device_type_filter = device_type_filter.lower()
+            return [entity for entity in all_states if entity.get("entity_id", "").startswith(device_type_filter + ".")]
+        return all_states
 
-            entity_state = response.json()
-            print(f"HomeAssistantSkill: Successfully retrieved state for '{entity_id}'. State: {entity_state.get('state')}")
-            return entity_state
-
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 404:
-                print(f"HomeAssistantSkill: Entity '{entity_id}' not found (HTTP 404).")
-            else:
-                print(f"HomeAssistantSkill: HTTP error getting state for '{entity_id}': {e}")
-        except requests.exceptions.Timeout:
-            print(f"HomeAssistantSkill: Timeout getting state for '{entity_id}'.")
-        except requests.exceptions.RequestException as e:
-            print(f"HomeAssistantSkill: Error getting state for '{entity_id}': {e}")
-        except Exception as e:
-            print(f"HomeAssistantSkill: An unexpected error occurred while getting state for '{entity_id}': {e}")
-
-        return None
-
-    def call_service(self, domain: str, service: str, service_data: dict) -> bool:
-        """
-        Calls a service in Home Assistant (e.g., to turn on a light, toggle a switch).
-        Returns True on success, False on error.
-        """
-        if not self.api_available and not self.check_api_status(): # Check status if not known to be available
-            print(f"HomeAssistantSkill Error: API not available. Cannot call service {domain}.{service}.")
-            return False
-        if not self.ha_token or self.ha_token == "YOUR_LONG_LIVED_ACCESS_TOKEN_HERE":
-            print(f"HomeAssistantSkill Error: Token not configured. Cannot call service {domain}.{service}.")
-            return False
-
-        service_api_url = f"{self.ha_url.rstrip('/')}/api/services/{domain}/{service}"
-        print(f"HomeAssistantSkill: Calling service '{domain}.{service}' at {service_api_url} with data: {service_data}...")
-
-        try:
-            response = requests.post(service_api_url, headers=self.headers, json=service_data, timeout=10) # Longer timeout for actions
-            response.raise_for_status()  # Raises an HTTPError for bad responses (4XX or 5XX)
-
-            # A 200 OK response usually means the service call was accepted by Home Assistant.
-            # The response body contains a list of states of entities that were changed by the service call,
-            # or an empty list if no entities were changed or the service doesn't report state changes this way.
-            print(f"HomeAssistantSkill: Service call '{domain}.{service}' successful (HTTP {response.status_code}).")
-            # print(f"Response data: {response.json()}") # Optional: log the response data
-            return True
-
-        except requests.exceptions.HTTPError as e:
-            print(f"HomeAssistantSkill: HTTP error calling service '{domain}.{service}': {e}")
-            print(f"Response content: {e.response.text}")
-        except requests.exceptions.Timeout:
-            print(f"HomeAssistantSkill: Timeout calling service '{domain}.{service}'.")
-        except requests.exceptions.RequestException as e:
-            print(f"HomeAssistantSkill: Error calling service '{domain}.{service}': {e}")
-        except Exception as e:
-            print(f"HomeAssistantSkill: An unexpected error occurred while calling service '{domain}.{service}': {e}")
-
-        return False
 
 if __name__ == '__main__':
+    # Note: __main__ is for basic local testing of the skill.
+    # It won't reflect how LLMEngine or main.py use it via execute().
     print("Testing HomeAssistantSkill...")
     # This test assumes .env is in eidos_assistant/ and contains relevant HA variables.
     # The load_dotenv call at the top of the skill class should handle it.

@@ -180,38 +180,192 @@ def run_assistant():
                 elif command == "/always_listen":
                     print("Pathos: Preparing for always-listening mode...")
                     run_always_listening_mode(engine, voice_interface)
-                    print("Pathos: Exited always-listening mode. Returning to standard input.") # Eidos -> Pathos
+                    print("Pathos: Exited always-listening mode. Returning to standard input.")
 
                 elif command == "/ha_status":
                     entity_id = args_str.strip()
                     if not entity_id:
                         print("Pathos: Usage: /ha_status <entity_id>")
-                    elif not engine.ha_skill:
-                        print("Pathos: Home Assistant skill is not available or not configured.")
                     else:
-                        print(f"Pathos: Getting status for HA entity: '{entity_id}'...")
-                        state = engine.ha_skill.get_entity_state(entity_id)
-                        if state:
-                            print(f"Pathos HA Status: {entity_id} -> State: {state.get('state')}, Attributes: {state.get('attributes')}")
+                        ha_skill_instance = engine.skills.get("home_assistant_control")
+                        if ha_skill_instance:
+                            cli_args = {"action": "get_state", "entity_id": entity_id}
+                            result = ha_skill_instance.execute(action_param_ignored=None, args=cli_args)
+                            if isinstance(result, dict) and 'error' not in result:
+                                print(f"Pathos HA Status for {result.get('entity_id', entity_id)}: State: {result.get('state', 'N/A')}, Attributes: {result.get('attributes', {})}")
+                            else:
+                                print(f"Pathos: Error getting HA status: {result}")
                         else:
-                            print(f"Pathos: Could not retrieve status for '{entity_id}'. Check entity ID and HA connection.")
+                            print("Pathos: Home Assistant skill ('home_assistant_control') not found or not registered/configured.")
 
                 elif command == "/ha_toggle":
                     entity_id = args_str.strip()
                     if not entity_id:
                         print("Pathos: Usage: /ha_toggle <entity_id>")
-                    elif not engine.ha_skill:
-                        print("Pathos: Home Assistant skill is not available or not configured.")
                     else:
-                        print(f"Pathos: Attempting to toggle HA entity: '{entity_id}'...")
-                        # Using "homeassistant" domain for generic toggle
-                        if engine.ha_skill.call_service("homeassistant", "toggle", {"entity_id": entity_id}):
-                            print(f"Pathos: Toggle command sent for '{entity_id}'. Check Home Assistant for state change.")
+                        ha_skill_instance = engine.skills.get("home_assistant_control")
+                        if ha_skill_instance:
+                            domain = entity_id.split('.')[0] if '.' in entity_id else 'homeassistant' # Guess domain or use generic
+                            cli_args = {
+                                "action": "call_service",
+                                "domain": domain,
+                                "service": "toggle",
+                                "service_data": {"entity_id": entity_id}
+                            }
+                            result = ha_skill_instance.execute(action_param_ignored=None, args=cli_args)
+                            print(f"Pathos: HA Toggle result: {result}")
                         else:
-                            print(f"Pathos: Failed to send toggle command for '{entity_id}'.")
+                            print("Pathos: Home Assistant skill ('home_assistant_control') not found or not registered/configured.")
+
+                elif command == "/ha_list_entities":
+                    device_type_filter = args_str.strip() if args_str else None
+                    ha_skill_instance = engine.skills.get("home_assistant_control")
+                    if ha_skill_instance:
+                        cli_args = {"action": "list_entities"}
+                        if device_type_filter:
+                            cli_args["device_type_filter"] = device_type_filter
+                        print(f"Pathos: Listing HA entities (filter: {device_type_filter or 'None'})...")
+                        result = ha_skill_instance.execute(action_param_ignored=None, args=cli_args)
+                        if isinstance(result, dict) and 'error' not in result and 'entities' in result:
+                            print("Pathos HA Entities:")
+                            if result['entities']:
+                                for entity in result['entities']:
+                                    print(f"  - {entity.get('entity_id')}: {entity.get('state')}, Attributes: {entity.get('attributes', {}).get('friendly_name', 'N/A')}")
+                            else:
+                                print("  No entities found" + (f" matching filter '{device_type_filter}'." if device_type_filter else "."))
+                        else:
+                            print(f"Pathos: Error listing HA entities: {result}")
+                    else:
+                        print("Pathos: Home Assistant skill ('home_assistant_control') not found or not registered/configured.")
+
+                elif command == "/news":
+                    # Basic CLI argument parsing for /news
+                    # Example: /news technology 3  OR  /news general  OR /news 5
+                    cli_arg_parts = args_str.split()
+                    category_arg = None
+                    num_headlines_arg = None
+
+                    if len(cli_arg_parts) > 0:
+                        # Check if first arg is a number (for num_headlines only) or category
+                        if cli_arg_parts[0].isdigit():
+                            num_headlines_arg = int(cli_arg_parts[0])
+                        else:
+                            category_arg = cli_arg_parts[0]
+                            if len(cli_arg_parts) > 1 and cli_arg_parts[1].isdigit():
+                                num_headlines_arg = int(cli_arg_parts[1])
+
+                    news_skill_args = {}
+                    if category_arg:
+                        news_skill_args["category"] = category_arg
+                    if num_headlines_arg:
+                        news_skill_args["num_headlines"] = num_headlines_arg
+
+                    # Defaults will be handled by NewsSkill.execute if not provided
+
+                    print(f"Pathos: Fetching news... (CLI Args: category='{category_arg}', num_headlines='{num_headlines_arg}')")
+
+                    news_skill_instance = engine.skills.get("get_news_headlines")
+                    if news_skill_instance:
+                        result = news_skill_instance.execute(args=news_skill_args)
+
+                        if isinstance(result, dict):
+                            if 'error' in result:
+                                print(f"Pathos News Error: {result['error']}")
+                            else:
+                                print(f"Pathos News Headlines (Category: {result.get('category_used', 'N/A')}):")
+                                headlines = result.get("headlines", [])
+                                if not headlines:
+                                    print("  No headlines found.")
+                                for i, headline_item in enumerate(headlines):
+                                    print(f"  {i+1}. {headline_item.get('title', 'N/A')}")
+                                    print(f"     Link: {headline_item.get('link', '#')}")
+                                    print(f"     Source: {headline_item.get('source', 'N/A')}, Published: {headline_item.get('published', 'N/A')}")
+                        else:
+                            print(f"Pathos: Received an unexpected response format from the news skill: {result}")
+                    else:
+                        print("Pathos: News skill ('get_news_headlines') not found or not registered.")
+
+                elif command == "/weather":
+                    city_name_from_cli_arg = "London" # Default city
+                    units_from_cli_arg = "metric" # Default units
+
+                    if args_str:
+                        parts = args_str.split(",", 1)
+                        city_name_from_cli_arg = parts[0].strip()
+                        if len(parts) > 1:
+                            units_arg = parts[1].strip().lower()
+                            if units_arg in ["metric", "imperial", "standard"]:
+                                units_from_cli_arg = units_arg
+                            else:
+                                print(f"Pathos: Invalid units '{units_arg}'. Use 'metric', 'imperial', or 'standard'. Defaulting to 'metric'.")
+                                # units_from_cli_arg remains "metric" (default)
+                        # If only city is provided, units_from_cli_arg remains "metric" (default)
+
+                    print(f"Pathos: Getting weather for {city_name_from_cli_arg} in {units_from_cli_arg} units...")
+
+                    weather_skill = engine.skills.get("get_weather")
+                    if weather_skill:
+                        weather_args = {"city": city_name_from_cli_arg, "units": units_from_cli_arg}
+                        # The 'action' parameter is not used by WeatherSkill's execute method directly,
+                        # as the skill is simple and only does one thing.
+                        result = weather_skill.execute(args=weather_args)
+
+                        if isinstance(result, dict):
+                            if 'error' in result:
+                                print(f"Pathos Weather Error: {result['error']}")
+                            else:
+                                # Assuming result dict structure from WeatherSkill:
+                                # {'city': name, 'temperature': temp, 'description': description,
+                                #  'humidity': humidity, 'wind_speed': wind_speed, 'unit': temp_unit}
+                                temp_unit_char = "°C" if result.get("unit", "metric").lower() == "metric" else \
+                                                 ("°F" if result.get("unit", "").lower() == "imperial" else "K")
+
+                                weather_report = (
+                                    f"Pathos Weather in {result.get('city', city_name_from_cli_arg)}: "
+                                    f"{result.get('temperature', 'N/A')}{temp_unit_char}, "
+                                    f"{result.get('description', 'N/A')}. "
+                                    f"Humidity: {result.get('humidity', 'N/A')}%. "
+                                    f"Wind: {result.get('wind_speed', 'N/A')} m/s."
+                                )
+                                print(weather_report)
+                        else:
+                            print(f"Pathos: Received an unexpected response format from the weather skill: {result}")
+                    else:
+                        print("Pathos: Weather skill ('get_weather') not found or not registered.")
+
+                elif command == "/search":
+                    query = args_str.strip()
+                    if not query:
+                        print("Pathos: Please provide a search query. Usage: /search <your query>")
+                    else:
+                        print(f"Pathos: Searching the web for: '{query}'...")
+                        search_skill_instance = engine.skills.get("perform_web_search")
+                        if search_skill_instance:
+                            # CLI search might not need num_results specified, skill default is fine.
+                            # Or, allow specifying num_results: /search <num> <query>
+                            # For simplicity, just passing query for now.
+                            search_args = {"query": query}
+                            result = search_skill_instance.execute(args=search_args)
+
+                            if isinstance(result, dict):
+                                if 'error' in result:
+                                    print(f"Pathos Search Error: {result['error']}")
+                                elif result.get("synthesis_needed"):
+                                    # For CLI, we display the raw search results that would be used for synthesis
+                                    print("Pathos Web Search Results (raw content for synthesis):")
+                                    search_content = result.get("synthesis_prompt_content", "No content found.")
+                                    # The content is already formatted with titles, URLs, snippets.
+                                    print(search_content)
+                                else:
+                                    # This case should ideally not happen if skill always returns synthesis_needed or error
+                                    print(f"Pathos Search: Unexpected result from skill: {result}")
+                            else:
+                                print(f"Pathos: Received an unexpected response format from the search skill: {result}")
+                        else:
+                            print("Pathos: Web search skill ('perform_web_search') not found or not registered.")
 
                 elif command == "/validate_setup":
-                    print("\nPathos: --- Validating Setup ---") # Eidos -> Pathos
+                    print("\nPathos: --- Validating Setup ---")
 
                     # 1. Check FFmpeg
                     ffmpeg_ok, ffmpeg_msg = check_ffmpeg_accessible()

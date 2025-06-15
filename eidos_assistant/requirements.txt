@@ -8,3 +8,5 @@ playsound
 PyAudio
 pyttsx3
 llama-cpp-python
+feedparser
+duckduckgo-search
